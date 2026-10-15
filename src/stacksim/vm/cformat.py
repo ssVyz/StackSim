@@ -188,9 +188,11 @@ def _scanset(spec: bytes) -> tuple[set[int], bool]:
     return chars, negate
 
 
-def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list, func: str) -> tuple[int, int]:
+def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list, func: str, more=None) -> tuple[int, int]:
     """Parse ``inp`` from ``pos`` according to ``fmt``; store into the pointer ``args``.
 
+    ``more()`` (optional) asks for more input when ``inp`` is used up; it returns
+    the extended buffer, or None at the end of the input.
     Returns (number of assigned conversions or -1 for EOF, new input position).
     """
     from ..c.ast import expr_str
@@ -201,6 +203,17 @@ def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list
     i = 0
     n = len(inp)
     stored: list[str] = []
+
+    def avail(k: int) -> bool:
+        """Is inp[k] there? Asks for more input if possible."""
+        nonlocal inp, n
+        while k >= n and more is not None:
+            new = more()
+            if new is None:
+                return False
+            inp = new
+            n = len(inp)
+        return k < n
 
     def target(t_desc: str):
         nonlocal ai
@@ -221,11 +234,11 @@ def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list
         if c in _WS:
             while i < len(fmt) and fmt[i] in _WS:
                 i += 1
-            while pos < n and inp[pos] in _WS:
+            while avail(pos) and inp[pos] in _WS:
                 pos += 1
             continue
         if c != 0x25:
-            if pos < n and inp[pos] == c:
+            if avail(pos) and inp[pos] == c:
                 pos += 1
                 i += 1
                 continue
@@ -238,9 +251,9 @@ def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list
         if conv is None:
             break
         if conv == b"%":
-            while pos < n and inp[pos] in _WS:
+            while avail(pos) and inp[pos] in _WS:
                 pos += 1
-            if pos < n and inp[pos] == 0x25:
+            if avail(pos) and inp[pos] == 0x25:
                 pos += 1
                 continue
             break
@@ -251,9 +264,9 @@ def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list
                     vm.store(p.addr, T.INT, pos, p.prov, node)
             continue
         if conv not in (b"c",) and not conv.startswith(b"["):
-            while pos < n and inp[pos] in _WS:
+            while avail(pos) and inp[pos] in _WS:
                 pos += 1
-        if pos >= n:
+        if not avail(pos):
             return (count if count else -1), pos
         w = int(width) if width else None
         end = n if w is None else min(n, pos + w)
@@ -292,6 +305,7 @@ def scan(vm, node, inp: bytes, pos: int, fmt: bytes, args: list, arg_nodes: list
             count += 1
         elif conv == b"c":
             k = w or 1
+            avail(pos + k - 1)
             data = inp[pos : pos + k]
             if not data:
                 break

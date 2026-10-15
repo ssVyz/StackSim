@@ -28,6 +28,8 @@ def window(qapp, tmp_path):
 
     settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
     w = MainWindow(settings=settings)
+    # Never open the real (modal) input dialog in tests: answer "end of input" unless a test says otherwise.
+    w.ask_input = lambda req: ("eof", "")
     w.resize(1400, 900)
     w.show()
     qapp.processEvents()
@@ -245,3 +247,63 @@ def test_frame_limit_setting_is_used_for_runs(window, qapp):
     assert w.trace.end_reason == "exit"
     w.save_settings()
     assert int(w.settings.value("max_frames")) == 15
+
+
+def test_interactive_input_is_asked_saved_and_reset(window, qapp):
+    w = window
+    load(w, "Reading input with scanf")
+    w.clear_input()
+    asked = []
+    answers = ["3", "10 20", "12"]
+
+    def fake_ask(req):
+        asked.append(req)
+        return ("line", answers.pop(0)) if answers else ("eof", "")
+
+    w.ask_input = fake_ask
+    run_and_wait(w, qapp)
+    assert w.trace.end_reason == "exit"
+    assert len(asked) == 3 and asked[0]["output"] == "How many numbers? "
+    assert w.stdin_edit.toPlainText() == "3\n10 20\n12\n", "answers are saved in the Input tab"
+    w.goto(w.last_step())
+    assert "sum = 42" in w.output.toPlainText().replace("\n", " ")
+
+    # the next run uses the saved input without asking
+    asked.clear()
+    run_and_wait(w, qapp)
+    assert asked == [] and w.trace.end_reason == "exit"
+
+    # after clearing, the user is asked again
+    w.clear_input()
+    answers[:] = ["1", "5"]
+    run_and_wait(w, qapp)
+    assert len(asked) == 2
+    assert w.stdin_edit.toPlainText() == "1\n5\n"
+
+
+def test_input_dialog_eof_and_stop(window, qapp):
+    w = window
+    load(w, "Reading input with scanf")
+    w.clear_input()
+    w.ask_input = lambda req: ("eof", "")
+    run_and_wait(w, qapp)
+    assert w.stdin_eof.isChecked(), "EOF is remembered"
+    assert w.trace is not None  # count stays uninitialized after a failed scanf, so the run may hit the step limit
+
+    w.clear_input()
+    assert not w.stdin_eof.isChecked()
+    w.ask_input = lambda req: ("stop", "")
+    run_and_wait(w, qapp)
+    assert w.trace.end_reason == "cancelled"
+
+
+def test_typed_input_is_joined_on_a_new_line(window, qapp):
+    w = window
+    load(w, "Reading input with scanf")
+    w.stdin_edit.setPlainText("2\n4")  # no newline at the end
+    w.stdin_eof.setChecked(False)
+    w.ask_input = lambda req: ("line", "6")
+    run_and_wait(w, qapp)
+    assert w.stdin_edit.toPlainText() == "2\n4\n6\n"
+    w.goto(w.last_step())
+    assert "sum = 10" in w.output.toPlainText().replace("\n", " ")

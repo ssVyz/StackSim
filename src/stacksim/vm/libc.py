@@ -417,7 +417,10 @@ def b_perror(vm, node, args):
 
 def b_scanf(vm, node, args):
     fmt = read_cstring(vm, args[0], node, "scanf")
-    count, pos = scan(vm, node, vm.stdin, vm.stdin_pos, fmt, args[1:], node.args[1:], "scanf")
+    def more():
+        return vm.stdin if vm.need_input(node, "scanf") else None
+
+    count, pos = scan(vm, node, vm.stdin, vm.stdin_pos, fmt, args[1:], node.args[1:], "scanf", more)
     vm.stdin_pos = pos
     return count
 
@@ -429,8 +432,8 @@ def b_sscanf(vm, node, args):
     return count
 
 
-def b_getchar(vm, node, args):
-    if vm.stdin_pos >= len(vm.stdin):
+def b_getchar(vm, node, args, func="getchar"):
+    if vm.stdin_pos >= len(vm.stdin) and not vm.need_input(node, func):
         vm.event("getchar() reached the end of the input and returns EOF (-1).")
         return EOF
     c = vm.stdin[vm.stdin_pos]
@@ -444,7 +447,7 @@ def b_fgetc(vm, node, args):
     if stream != "stdin":
         vm.warn("invalid-file", "fgetc() can only read from stdin", node)
         return EOF
-    return b_getchar(vm, node, [])
+    return b_getchar(vm, node, [], "fgetc")
 
 
 def b_fgets(vm, node, args):
@@ -453,11 +456,11 @@ def b_fgets(vm, node, args):
     if stream != "stdin":
         vm.warn("invalid-file", "fgets() can only read from stdin", node)
         return Ptr(0)
-    if vm.stdin_pos >= len(vm.stdin) or size <= 0:
+    if size <= 0 or (vm.stdin_pos >= len(vm.stdin) and not vm.need_input(node, "fgets")):
         vm.event("fgets() reached the end of the input and returns NULL.")
         return Ptr(0)
     data = bytearray()
-    while len(data) < size - 1 and vm.stdin_pos < len(vm.stdin):
+    while len(data) < size - 1 and (vm.stdin_pos < len(vm.stdin) or vm.need_input(node, "fgets")):
         c = vm.stdin[vm.stdin_pos]
         vm.stdin_pos += 1
         data.append(c)

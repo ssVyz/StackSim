@@ -381,13 +381,13 @@ int main(void) {
 #include <stdio.h>
 
 int main(void) {
-    int count;
+    int count = 0;
     printf("How many numbers? ");
     scanf("%d", &count);          // &count: scanf needs the address
 
     int sum = 0;
     for (int i = 0; i < count; i++) {
-        int x;
+        int x = 0;
         scanf("%d", &x);
         sum += x;
     }
@@ -395,7 +395,7 @@ int main(void) {
     return 0;
 }
 """,
-        stdin="3\n10 20 12\n",
+        stdin="",
     ),
     Example(
         "Uninitialized variables",

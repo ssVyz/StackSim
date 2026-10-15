@@ -10,6 +10,7 @@ from importlib import resources
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -17,9 +18,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QStyle,
@@ -36,7 +39,7 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..c.compiler import CompileResult, compile_source
 from ..viewmodel import MemoryState, ViewBuilder
-from ..vm.interpreter import DEFAULT_MAX_FRAMES, DEFAULT_MAX_STEPS, execute
+from ..vm.interpreter import DEFAULT_MAX_FRAMES, DEFAULT_MAX_STEPS, Cancelled, execute
 from ..vm.trace import Trace
 from .canvas import MemoryCanvas
 from .editor import CodeEditor
@@ -69,6 +72,56 @@ STEP_KIND_TEXT = {
 
 class _Bridge(QObject):
     finished = Signal(object, object, object)  # CompileResult, Trace | None, error text | None
+    input_needed = Signal(object, object)  # request dict, reply box (see MainWindow.input_provider)
+
+
+class InputDialog(QDialog):
+    """Asks for one line of keyboard input while a program is being run."""
+
+    def __init__(self, parent, req: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Input needed")
+        self.result_kind = "stop"
+        lay = QVBoxLayout(self)
+        where = f"Line {req['line']}: " if req.get("line") else ""
+        text = f"<p>{where}<code>{html.escape(req.get('call') or '')}</code> is waiting for keyboard input.</p>"
+        if req.get("output"):
+            text += f"<p>The program has printed:<br><code>{html.escape(req['output'])}</code></p>"
+        fmt = req.get("format")
+        if fmt and fmt != fmt.rstrip():
+            text += (
+                "<p><i>Note: the format string ends with whitespace, so scanf keeps reading until it sees "
+                "something that is not a space or a new line. Remove the whitespace at the end of the format.</i></p>"
+            )
+        label = QLabel(text)
+        label.setWordWrap(True)
+        lay.addWidget(label)
+        self.edit = QLineEdit()
+        self.edit.setFont(mono_font(11))
+        self.edit.setPlaceholderText("Type one line, then press Enter")
+        lay.addWidget(self.edit)
+        note = QLabel(
+            "Your input is saved in the <b>Input (stdin)</b> tab and used again in the next runs. "
+            "Press <b>Clear input</b> there to be asked again."
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        bb = QDialogButtonBox()
+        ok = bb.addButton("OK", QDialogButtonBox.ButtonRole.AcceptRole)
+        eof = bb.addButton("End of input (EOF)", QDialogButtonBox.ButtonRole.ActionRole)
+        stop = bb.addButton("Stop program", QDialogButtonBox.ButtonRole.RejectRole)
+        ok.setDefault(True)
+        ok.clicked.connect(lambda: self._done("line"))
+        eof.clicked.connect(lambda: self._done("eof"))
+        stop.clicked.connect(lambda: self._done("stop"))
+        eof.setToolTip("Tell the program that there is no more input (like Ctrl+D / Ctrl+Z in a terminal).")
+        lay.addWidget(bb)
+        self.edit.returnPressed.connect(lambda: self._done("line"))
+        self.resize(480, self.sizeHint().height())
+
+    def _done(self, kind: str) -> None:
+        self.result_kind = kind
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -93,6 +146,7 @@ class MainWindow(QMainWindow):
         self.show_ghosts = False
         self.bridge = _Bridge()
         self.bridge.finished.connect(self.on_run_finished)
+        self.bridge.input_needed.connect(self.on_input_needed)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
 
@@ -134,10 +188,26 @@ class MainWindow(QMainWindow):
         stdin_box = QWidget()
         sl = QVBoxLayout(stdin_box)
         sl.setContentsMargins(4, 4, 4, 4)
-        hint = QLabel("The program reads this text as its keyboard input (stdin). Text it has already read is greyed out.")
+        hint = QLabel(
+            "The program reads this text as its keyboard input (stdin); text it has already read is greyed out. "
+            "When the program needs more, you are asked while it runs, and your answers are added here."
+        )
         hint.setWordWrap(True)
         sl.addWidget(hint)
         sl.addWidget(self.stdin_edit)
+        row = QHBoxLayout()
+        self.stdin_eof = QCheckBox("Input ends here (EOF)")
+        self.stdin_eof.setToolTip(
+            "Checked: after this text the program gets 'end of input' (EOF) instead of asking you for more."
+        )
+        self.stdin_eof.toggled.connect(lambda _: self.on_code_changed())
+        clear = QPushButton("Clear input")
+        clear.setToolTip("Delete the saved input, so that you are asked again in the next run")
+        clear.clicked.connect(self.clear_input)
+        row.addWidget(self.stdin_eof)
+        row.addStretch(1)
+        row.addWidget(clear)
+        sl.addLayout(row)
         self.problems = QTreeWidget()
         self.problems.setHeaderLabels(["", "Line", "Step", "Problem"])
         self.problems.setRootIsDecorated(False)
@@ -280,6 +350,7 @@ class MainWindow(QMainWindow):
         rm.addAction(act("Clear all breakpoints", self.clear_breakpoints))
         rm.addAction(act("Step limit...", self.ask_step_limit))
         rm.addAction(act("Frame limit...", self.ask_frame_limit))
+        rm.addAction(act("Clear saved input", self.clear_input))
 
         vm = mb.addMenu("&View")
         self.act_addr = act("Show addresses", lambda c: self.set_canvas_option("show_addresses", c), checkable=True)
@@ -333,6 +404,7 @@ class MainWindow(QMainWindow):
         src = s.value("source")
         self.editor.setPlainText(src if isinstance(src, str) and src.strip() else DEFAULT_PROGRAM)
         self.stdin_edit.setPlainText(s.value("stdin", "") or "")
+        self.stdin_eof.setChecked(s.value("stdin_eof", False) in (True, "true"))
         self.file_path = s.value("file_path") or None
         self.speed.setCurrentIndex(int(s.value("speed", DEFAULT_SPEED)))
 
@@ -361,6 +433,7 @@ class MainWindow(QMainWindow):
         s.setValue("split_right", self.right_split.saveState())
         s.setValue("source", self.editor.toPlainText())
         s.setValue("stdin", self.stdin_edit.toPlainText())
+        s.setValue("stdin_eof", self.stdin_eof.isChecked())
         s.setValue("file_path", self.file_path or "")
         s.setValue("speed", self.speed.currentIndex())
         s.setValue("show_addresses", self.act_addr.isChecked())
@@ -482,15 +555,69 @@ class MainWindow(QMainWindow):
         cancel = self.cancel
         max_steps = self.max_steps
         max_frames = self.max_frames
+        provider = self.make_input_provider(cancel)
+        eof = self.stdin_eof.isChecked()
 
         def work():
             try:
-                trace = execute(result.program, stdin, max_steps, cancel, src, max_frames)
+                trace = execute(result.program, stdin, max_steps, cancel, src, max_frames, provider, eof)
                 self.bridge.finished.emit(result, trace, None)
             except Exception:  # pragma: no cover - internal errors are shown to the user
                 self.bridge.finished.emit(result, None, traceback.format_exc())
 
         threading.Thread(target=work, name="stacksim-run", daemon=True).start()
+
+    # ---------------------------------------------------------------- input
+
+    def make_input_provider(self, cancel: threading.Event):
+        """The VM calls this (in its own thread) when the program wants more input than is saved."""
+
+        def provider(req: dict) -> bytes | None:
+            box = {"done": threading.Event(), "answer": None, "stop": False}
+            self.bridge.input_needed.emit(req, box)
+            while not box["done"].wait(0.05):
+                if cancel.is_set():
+                    raise Cancelled()
+            if box["stop"]:
+                cancel.set()
+                raise Cancelled()
+            return box["answer"]
+
+        return provider
+
+    def ask_input(self, req: dict) -> tuple[str, str]:
+        """Show the input dialog. Returns ("line", text), ("eof", "") or ("stop", "")."""
+        dlg = InputDialog(self, req)
+        dlg.exec()
+        return dlg.result_kind, dlg.edit.text()
+
+    def on_input_needed(self, req: dict, box: dict) -> None:
+        where = f" (line {req['line']})" if req.get("line") else ""
+        self.statusBar().showMessage(f"The program is waiting for input{where}...")
+        try:
+            kind, text = self.ask_input(req)
+        except Exception:  # pragma: no cover - never leave the VM thread waiting
+            kind, text = "stop", ""
+        if kind == "line":
+            current = self.stdin_edit.toPlainText()
+            sep = "\n" if current and not current.endswith("\n") else ""
+            added = sep + text + "\n"
+            cur = QTextCursor(self.stdin_edit.document())
+            cur.movePosition(QTextCursor.MoveOperation.End)
+            cur.insertText(added)
+            box["answer"] = added.encode("utf-8")
+            self.statusBar().showMessage("Running...")
+        elif kind == "eof":
+            self.stdin_eof.setChecked(True)
+            box["answer"] = None
+        else:
+            box["stop"] = True
+        box["done"].set()
+
+    def clear_input(self) -> None:
+        self.stdin_edit.clear()
+        self.stdin_eof.setChecked(False)
+        self.statusBar().showMessage("Saved input cleared - the next run asks for input again.", 4000)
 
     def stop_run(self) -> None:
         if self.cancel is not None:

@@ -44,5 +44,9 @@ def test_examples_have_unique_titles():
 
 def test_scanf_example_output():
     ex = next(e for e in EXAMPLES if e.title == "Reading input with scanf")
-    _, tr = run_source(ex.code, ex.stdin)
+    assert ex.stdin == "", "the example starts without saved input, so the first run asks for it"
+    answers = [b"3\n", b"10 20 12\n"]
+    _, tr = run_source(ex.code, ex.stdin, input_provider=lambda req: answers.pop(0) if answers else None)
     assert output_text(tr).endswith("sum = 42\n")
+    _, tr = run_source(ex.code, ex.stdin)  # without anyone typing: EOF, count stays 0
+    assert output_text(tr).endswith("sum = 0\n")

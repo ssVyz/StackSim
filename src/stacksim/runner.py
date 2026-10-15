@@ -15,13 +15,15 @@ def run_source(
     max_steps: int = DEFAULT_MAX_STEPS,
     cancel: threading.Event | None = None,
     max_frames: int = DEFAULT_MAX_FRAMES,
+    input_provider=None,
+    stdin_eof: bool = False,
 ) -> tuple[CompileResult, Trace | None]:
     if isinstance(stdin, str):
         stdin = stdin.encode("utf-8")
     result = compile_source(source)
     if not result.ok:
         return result, None
-    trace = execute(result.program, stdin, max_steps, cancel, source, max_frames)
+    trace = execute(result.program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof)
     return result, trace
 
 

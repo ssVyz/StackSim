@@ -100,6 +100,8 @@ class VM:
         cancel: threading.Event | None = None,
         source: str = "",
         max_frames: int = DEFAULT_MAX_FRAMES,
+        input_provider=None,
+        stdin_eof: bool = False,
     ):
         self.prog = program
         self.source = source
@@ -107,6 +109,11 @@ class VM:
         self.stdin_pos = 0
         self.max_steps = max_steps
         self.max_frames = max_frames
+        # Interactive input: called (in the VM's thread) when a program wants to
+        # read more than the prepared input. It returns the bytes the user typed,
+        # or None for "end of input"; it may raise Cancelled to stop the run.
+        self.input_provider = input_provider
+        self.stdin_eof = stdin_eof
         self.cancel = cancel
 
         self.mem = Memory()
@@ -195,6 +202,30 @@ class VM:
     def fatal(self, kind: str, msg: str, node, hint: str | None = None, addrs=()):
         loc = node.loc if node is not None else None
         raise FatalError(Diagnostic("error", msg, loc, hint, step=None, kind=kind, addrs=list(addrs)))
+
+    def need_input(self, node, func: str) -> bool:
+        """Ask for more input when the program has read everything. False means end of input."""
+        if self.stdin_eof or self.input_provider is None:
+            return False
+        tail = b"".join(d for _, d in self.output[-20:]).decode("utf-8", "replace")
+        request = {
+            "line": node.loc.line if node is not None and getattr(node, "loc", None) else None,
+            "func": func,
+            "call": expr_str(node) if isinstance(node, A.Call) else func + "()",
+            "output": tail.rstrip("\n").rsplit("\n", 1)[-1],
+            "format": None,
+        }
+        if func == "scanf" and isinstance(node, A.Call) and node.args and isinstance(node.args[0], A.Decay) and isinstance(node.args[0].expr, A.StrLit):
+            request["format"] = node.args[0].expr.data.decode("utf-8", "replace")
+        data = self.input_provider(request)
+        if data is None:
+            self.stdin_eof = True
+            self.event(f"The input was ended (EOF), so {func}() gets nothing more to read.")
+            return False
+        self.stdin = self.stdin + data
+        shown = data.decode("utf-8", "replace").strip("\n").replace("\n", "\\n")
+        self.event(f'You typed "{shown}" as input for {func}().')
+        return True
 
     def write_out(self, stream: str, data: bytes) -> None:
         if data:
@@ -1504,6 +1535,8 @@ def execute(
     cancel: threading.Event | None = None,
     source: str = "",
     max_frames: int = DEFAULT_MAX_FRAMES,
+    input_provider=None,
+    stdin_eof: bool = False,
 ) -> Trace:
     """Run ``program`` in a thread with a large stack (deep C recursion needs deep Python recursion)."""
     result: dict = {}
@@ -1512,7 +1545,7 @@ def execute(
         old = sys.getrecursionlimit()
         sys.setrecursionlimit(max(old, 400_000))
         try:
-            result["trace"] = VM(program, stdin, max_steps, cancel, source, max_frames).run()
+            result["trace"] = VM(program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof).run()
         except BaseException as exc:  # pragma: no cover - surfaced to the caller
             result["error"] = exc
 

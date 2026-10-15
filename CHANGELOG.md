@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2026-10-15
+
+### Added
+
+- Interactive input: when a program reads more than the Input (stdin) tab contains (`scanf`, `getchar`, `fgetc`/`getc`, `fgets`), a dialog asks for one line while the run is recorded. It shows the waiting call, the line and the program's last output (e.g. the prompt it printed), and warns when a `scanf` format ends with whitespace. Answers are appended to the Input tab and reused in later runs; the dialog can also end the input (EOF) or stop the program.
+- Input tab: *Clear input* (also *Run > Clear saved input*) to be asked again, and *Input ends here (EOF)* to give the program end of input instead of asking; both are remembered.
+- Explanations in the step log when typed input is used ("You typed ... as input for scanf()").
+- `input_provider` and `stdin_eof` options for `run_source`/`execute`, and tests for interactive input.
+
+### Changed
+
+- The "Reading input with scanf" example starts without saved input, so its first run asks for the numbers, and it initializes its variables.
+
 ## [0.0.4] - 2026-10-15
 
 ### Added

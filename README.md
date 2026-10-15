@@ -46,7 +46,7 @@ stack overflow.
 | **Step over** (F11), **Back over** (Shift+F11) | the next or previous line of the current function, skipping over calls |
 | **Timeline** | drag to any point of the run; marks show where problems occurred |
 | **Breakpoints** | click in the editor margin (or press F9); playback stops there |
-| **Input (stdin)** tab | the text that `scanf`, `getchar` and `fgets` read |
+| **Input (stdin)** tab | the text that `scanf`, `getchar` and `fgets` read; when it runs out, a dialog asks you for the next line and saves your answer here (*Clear input* to be asked again) |
 | **Problems** tab | every compile and run-time problem; click one to jump to its step |
 
 Inside the app, *Help > How to read the memory view* explains the picture, and

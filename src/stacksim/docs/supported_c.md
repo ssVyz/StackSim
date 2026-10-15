@@ -59,7 +59,7 @@ hint naming the right header.
 ### Details and differences from a real C library
 
 - **printf family:** conversions `%d %i %u %o %x %X %c %s %f %F %e %E %g %G %a %A %p %%`, flags `- + space # 0`, width and precision (also `*`), length modifiers `hh h l ll z j t L`. `%n` is ignored. `%s` of `NULL` prints `(null)`, `%p` of `NULL` prints `(nil)`, like glibc.
-- **scanf family:** `%d %i %u %o %x %X %f %e %g %c %s %[...] %p %n %%`, with widths, `*` (skip) and length modifiers. Input comes from the **Input (stdin)** tab, which has to be filled in before pressing Run.
+- **scanf family:** `%d %i %u %o %x %X %f %e %g %c %s %[...] %p %n %%`, with widths, `*` (skip) and length modifiers. Input comes from the **Input (stdin)** tab. When the program wants to read more than the tab contains, a dialog asks for one line of input while the run is being recorded; the line is added to the tab and reused in later runs (*Clear input* resets it, so you are asked again). The dialog can also end the input (`EOF`, like Ctrl+D in a terminal) or stop the program; *Input ends here (EOF)* in the tab makes the program get `EOF` instead of asking. `getchar`, `fgetc`/`getc` and `fgets` ask in the same way.
 - `fgets`, `fgetc` and `getc` can only read from `stdin`; `fprintf`, `fputs` and `fputc` can write to `stdout` and `stderr` (shown in red). There are no files.
 - Output appears immediately; there is no output buffering.
 - `rand()` produces exactly the same numbers as glibc (Linux). `time()` always returns `1700000000`, so every run is reproducible.
