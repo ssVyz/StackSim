@@ -1,0 +1,90 @@
+# How to read the memory view
+
+When you press **Run** (F5), stacksim runs the whole program and records every
+step. Afterwards you can move through the recording in any direction, at any
+speed. At every step, the right side of the window shows the complete memory of
+the program at that moment.
+
+## The explanation panel
+
+The panel above the picture describes the current step:
+
+- **Just ran line N** - the line that was executed to get from the previous step to this one, followed by what it did ("New variable x ...", "malloc(16) reserves ...", "The condition i < 3 is true ...").
+- **Problems** found in this step, in orange (warnings) or red (crashes), each with a hint.
+- **Next: line N** - the line that runs next. In the editor it is marked with a green arrow and a green background; the line that just ran has a grey arrow.
+
+## The stack (left)
+
+Each function call gets a **stack frame**: a box with the function's name, its
+parameters and its local variables. `main()` is at the top; every call adds a
+new frame below it, and the frame disappears again when the function returns.
+The frame with the thick blue border belongs to the function that is running
+right now. The other frames show the line where they are waiting for the
+function they called.
+
+Each variable is shown with its name, its type, its value and (on the left)
+its address. Arrays are shown as a row of cells with their index above each
+cell; structs as a box with one line per member. A char array that holds a
+valid string also shows the string in quotes below its cells.
+
+When a function is about to return, its frame shows the return value at the
+bottom.
+
+## Static data and heap (right)
+
+**Static data** holds global variables, `static` variables and the string
+literals that a pointer currently points to (for example `"Hello"` in
+`const char *s = "Hello";`). These exist for the whole run of the program.
+
+The **heap** shows every block reserved with `malloc`, `calloc`, `realloc` or
+`strdup`, sorted by address. The header says how big the block is and in which
+line it was allocated. As soon as the program converts the block's address to
+a typed pointer (for example `int *p = malloc(...)`), the block is shown as
+values of that type; before that it is shown as raw bytes.
+
+- A **green** block is in use.
+- An **orange** block is **leaked**: no pointer in the program leads to it any more, so it can never be freed.
+- A **grey, hatched** block has been **freed**. It is still drawn so that you can see what dangling pointers point to. (*View > Show freed heap blocks* hides them.)
+
+## Values, colours and arrows
+
+| What you see | Meaning |
+|---|---|
+| yellow cell | this value changed in the step that just ran |
+| grey cell with `?` | this memory was never given a value - it contains garbage (hover to see it) |
+| red outline | memory involved in a problem in this step |
+| blue dot with an arrow | a pointer, and what it points to |
+| red dashed arrow | a dangling pointer (to freed memory or to a variable that no longer exists) or a pointer to memory that belongs to nothing |
+| grey dashed arrow | a pointer stored inside a freed block |
+| short line ending in a cross | the pointer points somewhere that is not shown |
+| `NULL` | a pointer that points to nothing |
+
+Hover over any value, variable or block for details: type, size, address and
+the exact value. *View > Show raw bytes* adds the bytes of every value (in
+memory order, little-endian), and *View > Show addresses* switches addresses
+on or off. Hold **Ctrl** and turn the mouse wheel to zoom.
+
+## Moving through the program
+
+| Control | Shortcut | What it does |
+|---|---|---|
+| Run | F5 | compile and run the program, recording every step |
+| Play / Pause | F6 | play forward at the chosen speed |
+| Play backwards | Shift+F6 | play backward |
+| Step / Back | F10 / Shift+F10 | one step forward / back |
+| Step over / Back over | F11 / Shift+F11 | to the next / previous line of the current function, without going into the functions it calls |
+| First step / Last step | Alt+Home / Alt+End | jump to the beginning / end |
+| Timeline | | click or drag to jump anywhere; orange and red marks show problems |
+| Breakpoints | click in the editor margin, or F9 | Play (and "Instant") stops at these lines |
+
+The **Speed** box sets how fast Play runs. *Step by step* waits for you after
+Run; *Instant* jumps straight to the end of the program (or to the next
+breakpoint).
+
+## What is simplified
+
+The picture is meant to be easy to understand, not an exact copy of what a real
+compiler does. Variables appear when their declaration runs (real compilers
+reserve a whole frame at once), nothing is optimized away or kept in CPU
+registers, and the memory layout is a simplified version of a 64-bit Linux
+process. See *Help > Supported C and library functions* for the details.

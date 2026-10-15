@@ -1,6 +1,4 @@
-def main():
-    print("Hello from stacksim!")
-
+from stacksim.app import main
 
 if __name__ == "__main__":
     main()
