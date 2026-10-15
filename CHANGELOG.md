@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-10-15
+
+### Added
+
+- *View > Show return addresses* (off by default, remembered): every stack frame shows its return address and saved frame pointer in a band at the top. Return addresses are labelled with the place they lead back to (e.g. "return to main(), line 14") and highlight that line in the editor on hover; saved frame pointers are drawn as a chain of arrows between frames; overwritten slots are marked in red.
+- Explanations of what the CPU does with these slots at every call and return (shown when the option is on).
+- Out-of-bounds messages name the return address or saved frame pointer when an overflow hits them; stack smashing is reported separately for each slot, with the address the return would have jumped to.
+- Tests for frame layout, return addresses, the frame-pointer chain and the new view option.
+
+### Changed
+
+- Stack frames follow the x86-64 layout: the return address sits above the saved frame pointer, and the stack is 16-byte aligned at each call.
+- Each function's code now gets an address range in which every source line has its own addresses, so return addresses map back to the line of the call; `main()` returns into a small C runtime stub, and callbacks from `qsort` return into the library.
+
 ## [0.0.2] - 2026-10-15
 
 ### Added

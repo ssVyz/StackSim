@@ -60,15 +60,17 @@ class MemObject:
             return f"{'static' if self.kind == 'static' else 'global'} variable '{self.name}'"
         if self.kind == "literal":
             return "a string literal"
-        if self.kind == "frame":
-            return f"the return address of {self.name}()"
+        if self.kind == "retaddr":
+            return f"the return address stored in {self.name}()'s stack frame"
+        if self.kind == "savedfp":
+            return f"the saved frame pointer in {self.name}()'s stack frame"
         return self.name
 
 
 class FrameRec:
     __slots__ = (
-        "id", "func", "parent", "depth", "call_line", "birth", "death", "vars", "header",
-        "ret_text", "ret_step", "base", "blocks", "var_map", "ret_value", "fd",
+        "id", "func", "parent", "depth", "call_line", "birth", "death", "vars", "ret_obj", "fp_obj",
+        "ret_addr", "saved_fp", "ret_text", "ret_step", "base", "blocks", "var_map", "ret_value", "fd",
     )
 
     def __init__(self, id: int, func: str, parent: int | None, depth: int, call_line: int | None, birth: int, base: int):
@@ -80,7 +82,13 @@ class FrameRec:
         self.birth = birth
         self.death: int | None = None
         self.vars: list[int] = []  # object ids, in declaration order
-        self.header: int | None = None
+        # The bookkeeping slots at the top of the frame (x86-64 style):
+        #   base - 8:  return address (pushed by the call)
+        #   base - 16: saved frame pointer of the caller; this address is the frame's own frame pointer
+        self.ret_obj: int | None = None
+        self.fp_obj: int | None = None
+        self.ret_addr = 0  # the value the call stored
+        self.saved_fp = 0  # the value the prologue stored
         self.ret_text: str | None = None
         self.ret_step: int | None = None
         self.base = base  # stack pointer at frame entry
@@ -122,6 +130,9 @@ class Trace:
     compile_diagnostics: list[Diagnostic] = field(default_factory=list)
     heap_base: int = 0
     code_names: dict[int, str] = field(default_factory=dict)  # function address -> name
+    code_ranges: list[tuple[int, int, str]] = field(default_factory=list)  # (start, end, function)
+    return_sites: dict[int, tuple[str, int | None]] = field(default_factory=dict)  # return address -> (description, line)
+    runtime_return: int = 0  # where main() returns to (inside the C runtime)
     final_shadow: dict[int, int] = field(default_factory=dict)  # pointer provenance at the end
 
     def frame_chain(self, step: int) -> list[FrameRec]:
@@ -134,6 +145,16 @@ class Trace:
             fid = fr.parent
         chain.reverse()
         return chain
+
+    def describe_code(self, addr: int) -> str | None:
+        """What a code address means: 'main(), line 12', 'the C runtime', or None if it is no code."""
+        site = self.return_sites.get(addr)
+        if site is not None:
+            return site[0]
+        for start, end, name in self.code_ranges:
+            if start <= addr < end:
+                return f"somewhere inside {name}()"
+        return None
 
     def output_at(self, step: int) -> list[tuple[str, bytes]]:
         return self.output[: self.steps[step].out_len]

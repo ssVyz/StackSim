@@ -60,6 +60,18 @@ class Cancelled(Exception):
     pass
 
 
+class _At:
+    """A stand-in for an AST node when a problem belongs to a plain source location."""
+
+    __slots__ = ("loc",)
+
+    def __init__(self, loc):
+        self.loc = loc
+
+
+RUNTIME_SIZE = 0x40  # the simulated C runtime / library code at the start of the code region
+
+
 def _align_up(v: int, a: int) -> int:
     return (v + a - 1) // a * a
 
@@ -101,6 +113,10 @@ class VM:
         self.warn_counts: dict = {}
         self.code_map: dict[int, A.FuncDef] = {}
         self.func_addr: dict[str, int] = {}
+        self.func_first_line: dict[str, int] = {}
+        self.code_ranges: list[tuple[int, int, str]] = []
+        self.return_sites: dict[int, tuple[str, int | None]] = {}
+        self.runtime_return = CODE_BASE + 0x1D
         self.literal_ref: list[tuple[int, int]] = []
         self.file_streams: dict[int, str] = {}
         self.static_objs: list[int] = []
@@ -202,10 +218,11 @@ class VM:
                     o = self.objects[oid]
                     if o.death is None and oid != exclude and o.addr < end and addr < o.addr + o.size:
                         return o
-                if fr.header is not None:
-                    o = self.objects[fr.header]
-                    if o.death is None and o.addr < end and addr < o.addr + o.size:
-                        return o
+                for oid in (fr.ret_obj, fr.fp_obj):
+                    if oid is not None:
+                        o = self.objects[oid]
+                        if o.death is None and o.addr < end and addr < o.addr + o.size:
+                            return o
                 fr = self.frames[fr.parent] if fr.parent is not None else None
             return None
         if r.kind == "heap":
@@ -347,7 +364,7 @@ class VM:
         msg = f"out of bounds: {verb} {size} byte{'s' if size != 1 else ''} {side} of {what}{idx_text}"
         hit = self.find_object(addr, size, exclude=o.id)
         if hit is not None:
-            msg += f" - this memory belongs to {self.where(hit, max(addr, hit.addr)) if hit.kind != 'frame' else hit.describe()}!"
+            msg += f" - this memory belongs to {self.where(hit, max(addr, hit.addr)) if hit.kind not in ('retaddr', 'savedfp') else hit.describe()}!"
         elif o.kind == "heap":
             msg += " - this memory is outside the block (it may hold malloc's bookkeeping data)"
         hint = (
@@ -460,13 +477,22 @@ class VM:
     def load_program(self) -> None:
         prog = self.prog
         mem = self.mem
-        nfun = max(1, len(prog.func_symbols))
-        code = mem.add_region("code", "code", CODE_BASE, 0x40 * nfun, readonly=True, fill="zero")
+        # Code: a small C runtime/library stub, then the functions. Every source
+        # line of a function gets 16 bytes of (imaginary) machine code, so that a
+        # return address can be traced back to the line of the call.
+        pos = CODE_BASE + RUNTIME_SIZE
+        for sym in prog.func_symbols:
+            fd = prog.functions[sym.name]
+            first, last = fd.loc.line, fd.body.end_loc.line
+            size = _align_up(0x10 * (last - first + 2), 0x40)
+            self.code_map[pos] = fd
+            self.func_addr[fd.name] = pos
+            self.func_first_line[fd.name] = first
+            self.code_ranges.append((pos, pos + size, fd.name))
+            pos += size
+        code = mem.add_region("code", "code", CODE_BASE, pos - CODE_BASE, readonly=True, fill="zero")
         code.init[:] = b"\x01" * len(code.init)
-        for i, sym in enumerate(prog.func_symbols):
-            addr = CODE_BASE + 0x40 * i
-            self.code_map[addr] = prog.functions[sym.name]
-            self.func_addr[sym.name] = addr
+        self.return_sites[self.runtime_return] = ("the C runtime (which then ends the program)", None)
 
         # Read-only data: string literals.
         lit_size = sum(len(b) + 1 for b in prog.literals)
@@ -581,6 +607,9 @@ class VM:
             compile_diagnostics=list(self.prog.diagnostics),
             heap_base=self.heap.base if self.heap else 0,
             code_names={addr: fd.name for addr, fd in self.code_map.items()},
+            code_ranges=list(self.code_ranges),
+            return_sites=dict(self.return_sites),
+            runtime_return=self.runtime_return,
             final_shadow=dict(self.shadow),
         )
 
@@ -657,25 +686,95 @@ class VM:
 
     # ============================================================= frames
 
+    def return_address(self, caller: FrameRec | None, node) -> int:
+        """The address the CPU continues at after the call: right after the call in the caller's code."""
+        if caller is None:
+            return self.runtime_return
+        has_loc = node is not None and getattr(node, "loc", None) is not None
+        line = node.loc.line if has_loc else self.func_first_line[caller.func]
+        col = node.loc.col if has_loc else 0
+        if isinstance(node, A.Call) and node.fsym is not None and node.fsym.builtin:
+            # A callback from a library function (qsort): it returns into the library.
+            addr = CODE_BASE + 0x30 + col % 11
+            self.return_sites[addr] = (f"{node.fsym.name}() in the C library (called from {caller.func}(), line {line})", line)
+            return addr
+        offset = 0x10 * (line - self.func_first_line[caller.func] + 1)
+        addr = self.func_addr[caller.func] + offset + 5 + col % 11
+        self.return_sites[addr] = (f"{caller.func}(), line {line}", line)
+        return addr
+
     def push_frame(self, fd: A.FuncDef, call_line: int | None, node=None) -> FrameRec:
         parent = self.frame
         rec = FrameRec(len(self.frames), fd.name, parent.id if parent is not None else None, (parent.depth + 1) if parent else 0, call_line, len(self.steps), self.sp)
         rec.fd = fd
         self.frames.append(rec)
-        addr = self.sp - 16
-        if addr < self.stack.base:
+        # Like on x86-64, the stack is 16-byte aligned at every call (this may
+        # leave a few unused bytes below the caller's variables).
+        top = self.sp & ~15
+        if top - 16 < self.stack.base:
             self.stack_overflow(fd, node)
-        self.sp = addr
-        hdr = self.new_object("frame", fd.name, None, addr, 16, None, self.stack)
-        self.objects[hdr].frame = rec.id
-        self.objects[hdr].hidden = True
-        rec.header = hdr
-        ret_addr = (self.func_addr.get(parent.func, CODE_BASE) + 0x10 + (call_line or 0) % 0x30) if parent else CODE_BASE
-        self.mem.write(self.stack, addr, ret_addr.to_bytes(8, "little") + (parent.base if parent else 0).to_bytes(8, "little"))
-        self.clear_shadow(addr, 16)
+        # The call instruction pushes the return address; the function's prologue
+        # then pushes the caller's frame pointer. The address of that saved frame
+        # pointer becomes this frame's own frame pointer.
+        ret_slot, fp_slot = top - 8, top - 16
+        self.sp = fp_slot
+        rec.ret_addr = self.return_address(parent, node)
+        rec.saved_fp = self.objects[parent.fp_obj].addr if parent is not None else 0
+        for kind, slot in (("retaddr", ret_slot), ("savedfp", fp_slot)):
+            oid = self.new_object(kind, fd.name, None, slot, 8, None, self.stack)
+            o = self.objects[oid]
+            o.frame = rec.id
+            o.hidden = True
+            if kind == "retaddr":
+                rec.ret_obj = oid
+            else:
+                rec.fp_obj = oid
+        self.mem.write(self.stack, ret_slot, rec.ret_addr.to_bytes(8, "little"))
+        self.mem.write(self.stack, fp_slot, rec.saved_fp.to_bytes(8, "little"))
+        self.clear_shadow(fp_slot, 16)
         rec.blocks = [[self.sp, []]]
         self.frame = rec
         return rec
+
+    def code_description(self, addr: int) -> str | None:
+        site = self.return_sites.get(addr)
+        if site is not None:
+            return site[0]
+        for start, end, name in self.code_ranges:
+            if start <= addr < end:
+                return f"somewhere inside {name}()"
+        return None
+
+    def check_frame_slots(self, rec: FrameRec) -> None:
+        """Warn if the return address or the saved frame pointer was overwritten."""
+        at = _At(rec.fd.body.end_loc) if rec.fd is not None else None
+        ro, fo = self.objects[rec.ret_obj], self.objects[rec.fp_obj]
+        base = self.stack.base
+        cur_ret = int.from_bytes(self.stack.data[ro.addr - base : ro.addr - base + 8], "little")
+        cur_fp = int.from_bytes(self.stack.data[fo.addr - base : fo.addr - base + 8], "little")
+        caller = self.frames[rec.parent].func if rec.parent is not None else None
+        if cur_ret != rec.ret_addr:
+            where = self.code_description(cur_ret)
+            now = f"which points to {where}" if where else "which is not an address in the program's code"
+            self.warn(
+                "stack-smashing",
+                f"stack smashing: the return address in {rec.func}()'s frame was overwritten. It should lead back to "
+                f"{self.code_description(rec.ret_addr)}, but now holds 0x{cur_ret:x}, {now}",
+                at,
+                hint="A local array in this function was written past its end. On a real system, returning would now make the CPU "
+                "jump to that address: the program would crash, or gcc's stack protector would stop it with "
+                "'*** stack smashing detected ***'. stacksim warns and continues as if the return address were intact.",
+                addrs=[(ro.addr, 8)],
+            )
+        if cur_fp != rec.saved_fp:
+            self.warn(
+                "stack-smashing",
+                f"stack smashing: the saved frame pointer in {rec.func}()'s frame was overwritten (0x{rec.saved_fp:x} became 0x{cur_fp:x})",
+                at,
+                hint=(f"After the return, {caller}() would use this wrong value as its frame pointer and could no longer find its own variables. " if caller else "")
+                + "stacksim warns and continues as if it were intact.",
+                addrs=[(fo.addr, 8)],
+            )
 
     def stack_overflow(self, fd, node=None) -> None:
         depth = (self.frame.depth + 1) if self.frame else 0
@@ -695,22 +794,10 @@ class VM:
             for oid in oids:
                 self.kill(oid, "return")
                 names.append(self.objects[oid].name)
-        hdr = self.objects[rec.header]
-        expected_ret = None
         if not quiet:
-            parent = self.frames[rec.parent] if rec.parent is not None else None
-            ret_addr = (self.func_addr.get(parent.func, CODE_BASE) + 0x10 + (rec.call_line or 0) % 0x30) if parent else CODE_BASE
-            expected_ret = ret_addr.to_bytes(8, "little") + (parent.base if parent else 0).to_bytes(8, "little")
-            cur = bytes(self.stack.data[hdr.addr - self.stack.base : hdr.addr - self.stack.base + 16])
-            if cur != expected_ret:
-                self.warn(
-                    "stack-smashing",
-                    f"stack smashing detected: the return address of {rec.func}() was overwritten",
-                    rec.fd.body if rec.fd else None,
-                    hint="Something wrote past the end of a local array in this function. On a real system the program would now jump to a garbage address or be aborted.",
-                    addrs=[(hdr.addr, 16)],
-                )
-        self.kill(rec.header, "return")
+            self.check_frame_slots(rec)
+        self.kill(rec.ret_obj, "return")
+        self.kill(rec.fp_obj, "return")
         rec.death = len(self.steps)
         self.sp = rec.base
         self.frame = self.frames[rec.parent] if rec.parent is not None else None

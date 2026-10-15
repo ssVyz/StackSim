@@ -30,6 +30,29 @@ valid string also shows the string in quotes below its cells.
 When a function is about to return, its frame shows the return value at the
 bottom.
 
+### Return address and saved frame pointer
+
+*View > Show return addresses* (off by default) reveals the two 8-byte
+bookkeeping slots at the top of every frame, in a shaded band above the
+variables:
+
+- **return address** - written by the call itself. It is the address in the
+  calling function's code where the program continues after the call, shown as
+  e.g. `0x40116a  return to main(), line 14`. Point at it to highlight that line
+  in the editor. `main()` itself was called by the C runtime, so its return
+  address leads back into the runtime, which then ends the program.
+- **saved frame ptr** - written by the called function when it starts: a copy of
+  the caller's frame pointer, restored when the function returns. The address
+  of this slot is the frame's own frame pointer, so the saved copies link all
+  frames into a chain; the grey arrows show that chain. In `main()` it is 0,
+  because there is no frame above it.
+
+When a call or a return happens, the explanation panel also describes what the
+CPU did with these slots. If a local array overflows into them, they are marked
+**OVERWRITTEN!** in red, and a *stack smashing* problem is reported when the
+function returns. (A real program would now jump to a garbage address and
+crash; stacksim reports it and continues as if the slots were intact.)
+
 ## Static data and heap (right)
 
 **Static data** holds global variables, `static` variables and the string
@@ -55,6 +78,7 @@ values of that type; before that it is shown as raw bytes.
 | red outline | memory involved in a problem in this step |
 | blue dot with an arrow | a pointer, and what it points to |
 | red dashed arrow | a dangling pointer (to freed memory or to a variable that no longer exists) or a pointer to memory that belongs to nothing |
+| grey arrow between frames | a saved frame pointer, pointing to the caller's frame (only with *Show return addresses*) |
 | grey dashed arrow | a pointer stored inside a freed block |
 | short line ending in a cross | the pointer points somewhere that is not shown |
 | `NULL` | a pointer that points to nothing |

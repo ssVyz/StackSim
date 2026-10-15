@@ -98,7 +98,7 @@ where that makes memory easier to understand.
   | `0x00405000` and up | heap: grows upwards |
   | below `0x7ffff000` | stack: grows downwards, 128 KiB |
 
-- **Stack:** every function call reserves 16 bytes for the return address and the saved frame pointer, then its parameters and local variables. A variable appears when its declaration runs and disappears when its block ends. (Real compilers reserve a whole frame at once when the function starts; stacksim shows the step-by-step view because it is easier to follow.) The stack holds 128 KiB, much less than the usual 8 MiB, so that endless recursion fails quickly.
+- **Stack:** like on x86-64, the stack is 16-byte aligned at every call. The call pushes the **return address** (8 bytes), then the called function saves the caller's **frame pointer** right below it (8 bytes); the address of that saved copy is the new frame's own frame pointer. Below these two slots come the parameters (on x86-64 they arrive in registers and are stored in the callee's frame) and the local variables. Each function's code gets a range of addresses starting at `0x00401040`, so a return address can be traced back to the line of the call; `main()` returns into a small C runtime stub at `0x00401000`. A variable appears when its declaration runs and disappears when its block ends. (Real compilers reserve a whole frame at once when the function starts; stacksim shows the step-by-step view because it is easier to follow.) The stack holds 128 KiB, much less than the usual 8 MiB, so that endless recursion fails quickly.
 - **Heap:** a first-fit allocator. Every block has a 16-byte header in front of it and starts on a 16-byte boundary; freed neighbouring blocks are merged, and freed memory is reused. The heap can grow to 16 MiB; after that `malloc` returns `NULL`.
 - **Uninitialized memory** (local variables without a value, memory from `malloc`) contains garbage. On a real system fresh heap memory is often all zeros, but you cannot rely on that; stacksim always shows garbage so the mistake is visible. Stack memory keeps the values of earlier, finished function calls - also like on a real system.
 - **Freed memory** keeps its old content. (A real allocator overwrites the first bytes with its own bookkeeping data.)
@@ -125,7 +125,7 @@ happen. The program then continues, so you can watch the consequences:
 - strings without a terminating `'\0'`
 - writing into a string literal
 - signed integer overflow, invalid shift amounts
-- stack smashing (an overwritten return address) and heap corruption (an overwritten malloc header)
+- stack smashing (an overwritten return address or saved frame pointer - reported when the function returns, after which stacksim continues as if they were intact) and heap corruption (an overwritten malloc header)
 - memory leaks: blocks that become unreachable are marked in the picture as soon as it happens, and all unfreed blocks are listed when the program ends
 
 Some problems stop the program, just like a crash would: dereferencing `NULL`,

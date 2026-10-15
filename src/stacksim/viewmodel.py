@@ -35,6 +35,7 @@ class Cell:
     target: int | None = None
     target_status: str = ""  # ok dangling wild null uninit fn end
     target_size: int = 1  # size of the pointed-to type (to pick the best arrow target)
+    always_text: bool = False  # show the pointer value even when addresses are switched off
     tooltip: str = ""
     raw: bytes = b""
     problem: bool = False
@@ -78,6 +79,17 @@ class VarView:
 
 
 @dataclass
+class FrameSlot:
+    """One of the bookkeeping slots at the top of a stack frame."""
+
+    kind: str  # retaddr | savedfp
+    cell: Cell
+    description: str
+    line: int | None = None  # the source line a return address leads back to
+    intact: bool = True
+
+
+@dataclass
 class FrameView:
     id: int
     func: str
@@ -85,7 +97,7 @@ class FrameView:
     vars: list[VarView]
     is_top: bool
     ret_text: str | None
-    header_addr: int
+    slots: list[FrameSlot] = field(default_factory=list)  # return address, saved frame pointer
     header_problem: bool = False
     depth: int = 0
     base: int = 0
@@ -127,6 +139,7 @@ class MemoryState:
     heap_live_blocks: int
     leaked_bytes: int
     problem_ranges: list[tuple[int, int]] = field(default_factory=list)
+    frame_notes: list[str] = field(default_factory=list)  # explanations about return addresses
 
 
 def _overlaps(ranges: list[tuple[int, int]], addr: int, size: int) -> bool:
@@ -232,6 +245,7 @@ class ViewBuilder:
             heap_live_blocks=len(heap_live),
             leaked_bytes=sum(b.size for b in leaked),
             problem_ranges=self.problem_ranges,
+            frame_notes=self.frame_notes(step),
         )
 
     # ------------------------------------------------------------- pieces
@@ -262,7 +276,7 @@ class ViewBuilder:
                     continue
                 vars_.append(self.var_view(o))
             ret_text = fr.ret_text if (is_top and st.kind == "return") else None
-            hdr = tr.objects[fr.header] if fr.header is not None else None
+            slots = self.frame_slots(fr)
             views.append(
                 FrameView(
                     id=fr.id,
@@ -271,13 +285,113 @@ class ViewBuilder:
                     vars=vars_,
                     is_top=is_top,
                     ret_text=ret_text,
-                    header_addr=hdr.addr if hdr else 0,
-                    header_problem=bool(hdr and _overlaps(self.problem_ranges, hdr.addr, hdr.size)),
+                    slots=slots,
+                    header_problem=any(sl.cell.problem or not sl.intact for sl in slots),
                     depth=fr.depth,
                     base=fr.base,
                 )
             )
         return views, hidden
+
+    def frame_slots(self, fr: FrameRec) -> list[FrameSlot]:
+        """The return address and the saved frame pointer at the top of a frame."""
+        tr = self.trace
+        if fr.ret_obj is None or fr.fp_obj is None:
+            return []
+        out = []
+        ro = tr.objects[fr.ret_obj]
+        got = self.mem.peek(ro.addr, 8)
+        if got is not None:
+            data = got[0]
+            v = int.from_bytes(data, "little")
+            intact = v == fr.ret_addr
+            target = tr.describe_code(v)
+            site = tr.return_sites.get(v)
+            if intact:
+                desc = f"return to {target}"
+            else:
+                desc = "OVERWRITTEN! " + (f"now leads to {target}" if target else "this is no code address any more")
+            tip = (
+                f"Return address (8 bytes at 0x{ro.addr:x})\n"
+                f"The call instruction stored here where the program continues when {fr.func}() returns:\n"
+                f"0x{fr.ret_addr:x} = {tr.describe_code(fr.ret_addr)}."
+            )
+            if not intact:
+                tip += f"\nIt was overwritten with 0x{v:x}: returning would make the CPU jump there."
+            cell = Cell(
+                ro.addr, 8, f"0x{v:x}", "code", True,
+                _overlaps(self.changed, ro.addr, 8), "", tooltip=tip, raw=data,
+                problem=_overlaps(self.problem_ranges, ro.addr, 8) or not intact,
+            )
+            out.append(FrameSlot("retaddr", cell, desc, site[1] if site and intact else None, intact))
+        fo = tr.objects[fr.fp_obj]
+        got = self.mem.peek(fo.addr, 8)
+        if got is not None:
+            data = got[0]
+            v = int.from_bytes(data, "little")
+            intact = v == fr.saved_fp
+            parent = tr.frames[fr.parent] if fr.parent is not None else None
+            if not intact:
+                desc = "OVERWRITTEN! the caller's frame pointer is lost"
+                kind, target, status = "ptr", v or None, "wild"
+            elif parent is None:
+                desc = "0: main() has no caller frame"
+                kind, target, status = "code", None, ""
+            else:
+                desc = f"{parent.func}()'s frame pointer"
+                kind, target, status = "ptr", v, "frame"
+            caller_name = f"{parent.func}()" if parent else "its caller"
+            tip = (
+                f"Saved frame pointer (8 bytes at 0x{fo.addr:x})\n"
+                f"{fr.func}() saved the frame pointer of {caller_name} here when it started, and restores it when it returns.\n"
+                f"The address of this slot, 0x{fo.addr:x}, is {fr.func}()'s own frame pointer: "
+                "its local variables are found relative to it."
+            )
+            cell = Cell(
+                fo.addr, 8, f"0x{v:x}", kind, True,
+                _overlaps(self.changed, fo.addr, 8), "", target=target, target_status=status, target_size=8,
+                tooltip=tip, raw=data, problem=_overlaps(self.problem_ranges, fo.addr, 8) or not intact, always_text=True,
+            )
+            out.append(FrameSlot("savedfp", cell, desc, None, intact))
+        return out
+
+    def frame_notes(self, step: int) -> list[str]:
+        """Explanations of what happened to return addresses and frame pointers in this step."""
+        tr = self.trace
+        st = tr.steps[step]
+        notes = []
+        if step > 0:
+            current = {fr.id for fr in tr.frame_chain(step)}
+            for fr in reversed(tr.frame_chain(step - 1)):
+                if fr.id in current:
+                    continue
+                if fr.parent is None:
+                    notes.append(
+                        f"main() returned: the CPU read the return address 0x{fr.ret_addr:x} from main()'s frame and "
+                        "jumped back into the C runtime, which ends the program."
+                    )
+                else:
+                    caller = tr.frames[fr.parent].func
+                    notes.append(
+                        f"{fr.func}() returned: the CPU read the return address 0x{fr.ret_addr:x} from its frame and jumped back to "
+                        f"{tr.describe_code(fr.ret_addr)}. {caller}()'s frame pointer was restored from the saved copy (0x{fr.saved_fp:x})."
+                    )
+        if st.kind in ("call", "start") and st.frame is not None:
+            fr = tr.frames[st.frame]
+            fp_slot = tr.objects[fr.fp_obj].addr if fr.fp_obj is not None else 0
+            if fr.parent is None:
+                notes.append(
+                    f"main() is called by the C runtime. The top of its frame holds the return address 0x{fr.ret_addr:x} "
+                    "(back into the runtime) and a saved frame pointer of 0, because there is no frame above it."
+                )
+            else:
+                caller = tr.frames[fr.parent].func
+                notes.append(
+                    f"The call pushed the return address 0x{fr.ret_addr:x} onto the stack: when {fr.func}() is done, the program "
+                    f"continues at {tr.describe_code(fr.ret_addr)}. Then {fr.func}() saved {caller}()'s frame pointer "
+                    f"(0x{fr.saved_fp:x}) right below it. The address of that slot, 0x{fp_slot:x}, is {fr.func}()'s own frame pointer."
+                )
+        return notes
 
     def build_statics(self, alive: list[MemObject]) -> list[VarView]:
         out = []

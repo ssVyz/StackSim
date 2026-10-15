@@ -177,3 +177,32 @@ def test_stdin_tab_and_problem_click(window, qapp):
     w.on_problem_clicked(runtime[0])
     step, _ = runtime[0].data(0, 0x0100)
     assert w.pos == min(step, w.last_step())
+
+
+def test_return_address_toggle(window, qapp, tmp_path):
+    w = window
+    load(w, "Function calls")
+    run_and_wait(w, qapp)
+    call = next(i for i, s in enumerate(w.trace.steps) if s.kind == "call" and w.trace.frames[s.frame].func == "square")
+    w.goto(call)
+    assert not w.act_frames.isChecked(), "hidden by default"
+    assert not w.canvas.layout_.line_links
+    assert "pushed the return address" not in w.explain.toPlainText()
+
+    w.act_frames.setChecked(True)
+    w.set_canvas_option("show_frame_info", True)
+    lay = w.canvas.layout_
+    assert lay.line_links, "return addresses link back to source lines"
+    assert any(status == "frame" for *_, status in lay.ptrs), "saved frame pointers are drawn as arrows"
+    assert "pushed the return address" in w.explain.toPlainText()
+
+    # pointing at a return address highlights its line in the editor
+    rect, line = lay.line_links[-1]
+    w.canvas.lineHovered.emit(line)
+    assert w.editor.hover_line == line
+    w.canvas.lineHovered.emit(None)
+    assert w.editor.hover_line is None
+
+    # the choice is remembered
+    w.save_settings()
+    assert w.settings.value("show_frame_info") in (True, "true")

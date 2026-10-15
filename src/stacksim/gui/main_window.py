@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         self.explain.setOpenLinks(False)
         self.explain.setMinimumHeight(60)
         self.canvas = MemoryCanvas()
+        self.canvas.lineHovered.connect(lambda line: self.editor.set_hover_line(line))
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.canvas)
         self.scroll.setWidgetResizable(False)
@@ -281,7 +282,13 @@ class MainWindow(QMainWindow):
         self.act_addr = act("Show addresses", lambda c: self.set_canvas_option("show_addresses", c), checkable=True)
         self.act_bytes = act("Show raw bytes", lambda c: self.set_canvas_option("show_bytes", c), checkable=True)
         self.act_freed = act("Show freed heap blocks", lambda c: self.set_canvas_option("show_freed", c), checkable=True)
-        for a in (self.act_addr, self.act_bytes, self.act_freed):
+        self.act_frames = act(
+            "Show return addresses",
+            lambda c: self.set_canvas_option("show_frame_info", c),
+            tip="Show the return address and the saved frame pointer at the top of every stack frame",
+            checkable=True,
+        )
+        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames):
             vm.addAction(a)
         vm.addSeparator()
         vm.addAction(act("Zoom in", lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15), "Ctrl++"))
@@ -289,7 +296,7 @@ class MainWindow(QMainWindow):
         vm.addAction(act("Reset zoom", lambda: self.canvas.set_zoom(1.0), "Ctrl+0"))
 
         tb.addSeparator()
-        for a in (self.act_addr, self.act_bytes, self.act_freed):
+        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames):
             tb.addAction(a)
 
         hm = mb.addMenu("&Help")
@@ -327,8 +334,10 @@ class MainWindow(QMainWindow):
         self.act_addr.setChecked(flag("show_addresses", True))
         self.act_bytes.setChecked(flag("show_bytes", False))
         self.act_freed.setChecked(flag("show_freed", True))
+        self.act_frames.setChecked(flag("show_frame_info", False))
         self.canvas.show_addresses = self.act_addr.isChecked()
         self.canvas.show_bytes = self.act_bytes.isChecked()
+        self.canvas.show_frame_info = self.act_frames.isChecked()
         self.show_freed = self.act_freed.isChecked()
         self.editor.document().setModified(False)
         self.stale = False
@@ -346,6 +355,7 @@ class MainWindow(QMainWindow):
         s.setValue("show_addresses", self.act_addr.isChecked())
         s.setValue("show_bytes", self.act_bytes.isChecked())
         s.setValue("show_freed", self.act_freed.isChecked())
+        s.setValue("show_frame_info", self.act_frames.isChecked())
         s.setValue("max_steps", self.max_steps)
 
     def closeEvent(self, ev) -> None:
@@ -780,6 +790,8 @@ class MainWindow(QMainWindow):
                 self.goto(self.pos)
             return
         self.canvas.set_option(name, value)
+        if name == "show_frame_info" and self.state is not None and not self.stale:
+            self.update_explanation(self.state)
 
     # ================================================================ goto
 
@@ -923,6 +935,12 @@ class MainWindow(QMainWindow):
                 + (f" (line {d.line})" if d.line else "")
                 + f":</b> {html.escape(d.message)}</div>"
                 + (f"<div style='color:{color}; margin-left:12px'><i>{html.escape(d.hint)}</i></div>" if d.hint else "")
+            )
+        if self.canvas.show_frame_info and s.frame_notes:
+            parts.append(
+                f"<div style='color:{t.frame_top_border.name()}; margin-top:4px'>"
+                + "<br>".join(html.escape(n) for n in s.frame_notes)
+                + "</div>"
             )
         if s.kind in ("exit", "error", "limit"):
             if s.kind == "exit":

@@ -131,6 +131,7 @@ class CodeEditor(QPlainTextEdit):
         self.next_line: int | None = None
         self.prev_line: int | None = None
         self.error_line: bool = False
+        self.hover_line: int | None = None  # a line pointed at from the memory view
         self.diags: dict[int, list] = {}  # line -> [(severity, message, col, length)]
         self.blockCountChanged.connect(self._update_gutter_width)
         self.updateRequest.connect(self._update_gutter)
@@ -250,6 +251,11 @@ class CodeEditor(QPlainTextEdit):
         sb = self.verticalScrollBar()
         sb.setValue(max(0, block.blockNumber() - self.viewport().height() // max(1, self.fontMetrics().height()) // 2))
 
+    def set_hover_line(self, line: int | None) -> None:
+        if line != self.hover_line:
+            self.hover_line = line
+            self._refresh_selections()
+
     def set_diagnostics(self, diags: list) -> None:
         """diags: list of (line, col, length, severity, message)."""
         self.diags = {}
@@ -285,6 +291,10 @@ class CodeEditor(QPlainTextEdit):
             sels.append(self._line_selection(self.prev_line, t.prev_line))
         if self.next_line:
             sels.append(self._line_selection(self.next_line, t.error_line if self.error_line else t.next_line))
+        if self.hover_line:
+            color = QColor(t.arrow)
+            color.setAlpha(70)
+            sels.append(self._line_selection(self.hover_line, color))
         for line, items in self.diags.items():
             for sev, msg, col, length in items:
                 block = self.document().findBlockByNumber(line - 1)

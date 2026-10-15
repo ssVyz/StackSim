@@ -4,6 +4,7 @@ the right, values as boxes, and arrows from pointers to what they point to."""
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPolygonF
@@ -42,6 +43,7 @@ class _Layout:
         self.depth = 0
         self.ghost = 0
         self.frame_rects: dict[int, QRectF] = {}
+        self.line_links: list[tuple[QRectF, int]] = []  # hovering these highlights a source line
 
     # -------------------------------------------------------------- ops
 
@@ -66,13 +68,13 @@ class _Layout:
     def cell_size(self, cell: Cell) -> tuple[float, float]:
         c = self.c
         if cell.kind == "ptr":
-            if c.show_addresses and cell.init:
+            if (c.show_addresses or cell.always_text) and cell.init:
                 w = 20 + self.fm_small.horizontalAdvance(cell.text) + 8
             else:
                 w = 30
         elif cell.kind == "null":
             w = self.fm_small.horizontalAdvance("NULL") + 16
-        elif cell.kind == "fn":
+        elif cell.kind in ("fn", "code", "addr"):
             w = self.fm_small.horizontalAdvance(cell.text) + 16
         else:
             text = cell.text if cell.init or cell.kind == "raw" else "?"
@@ -109,9 +111,9 @@ class _Layout:
             bad = cell.target_status in ("dangling", "wild", "uninit")
             ghost = self.ghost > 0
             if cell.init:
-                dot_color = t.freed_border if ghost else (t.arrow_bad if bad else t.arrow)
+                dot_color = t.freed_border if ghost else (t.arrow_bad if bad else (t.text_dim if cell.target_status == "frame" else t.arrow))
                 self.ops.append(("dot", dot, dot_color))
-                if c.show_addresses:
+                if c.show_addresses or cell.always_text:
                     self.text(QRectF(r.left() + 5, vr.top(), r.width() - 20, CELL_H), cell.text, c.f_mono_small, t.arrow_bad if bad and not ghost else t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 if cell.target is not None:
                     self.ptrs.append((dot, cell.target, cell.target_size, "ghost" if ghost else cell.target_status))
@@ -121,6 +123,10 @@ class _Layout:
             self.text(vr, "NULL", c.f_mono_small, t.null_text)
         elif cell.kind == "fn":
             self.text(vr, cell.text, c.f_mono_small, t.syn_function)
+        elif cell.kind == "code":
+            self.text(vr, cell.text, c.f_mono_small, t.problem_border if cell.problem else t.syn_function)
+        elif cell.kind == "addr":
+            self.text(vr, cell.text, c.f_mono_small, t.problem_border if cell.problem else t.text)
         else:
             text = cell.text if (cell.init or cell.kind == "raw") else "?"
             self.text(vr, text, c.f_mono, color)
@@ -281,14 +287,66 @@ class _Layout:
 
     # ------------------------------------------------------------ cards
 
+    SLOT_LABELS = {
+        "retaddr": ("return address", "stored by the call"),
+        "savedfp": ("saved frame ptr", "stored by the callee"),
+    }
+
+    def slot_row(self, sl, x: float, y: float, name_w: float, emit: bool, gutter_x: float | None = None) -> tuple[float, float]:
+        """A bookkeeping slot (return address / saved frame pointer) at the top of a frame."""
+        t = self.t
+        c = self.c
+        label, sub = self.SLOT_LABELS[sl.kind]
+        # The value is shown as plain text; a frame pointer gets its arrow from the
+        # end of the row, so that the arrows do not run across the descriptions.
+        cell = replace(sl.cell, kind="addr", target=None)
+        cw, ch = self.cell_size(cell)
+        dw = (self.fm_ui if sl.intact else self.fm_ui_bold).horizontalAdvance(sl.description) + 6
+        h = max(32.0, ch + 8)
+        w = name_w + 8 + cw + 10 + dw + 14
+        if emit:
+            self.text(QRectF(x, y + 3, name_w, 16), label, c.f_ui_bold, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.text(QRectF(x, y + 18, name_w, 12), sub, c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            cr = QRectF(x + name_w + 8, y + 4, cw, ch)
+            self.depth += 1
+            self.draw_cell(cell, cr)
+            self.depth -= 1
+            dr = QRectF(cr.right() + 10, y + 4, dw, CELL_H)
+            color = t.problem_border if not sl.intact else t.text_dim
+            self.text(dr, sl.description, c.f_ui_bold if not sl.intact else c.f_ui, color, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            row_end = QRectF(cr.left(), cr.top(), dr.right() + 16 - cr.left(), CELL_H)
+            # Arrows to this slot end after its description (preferred over the plain cell anchor).
+            self.anchors.append((sl.cell.addr, sl.cell.size, row_end, self.depth + 10))
+            if sl.cell.target is not None:
+                dot = QPointF(dr.right() + 8, dr.center().y())
+                bad = sl.cell.target_status in ("wild", "dangling")
+                self.ops.append(("dot", dot, t.arrow_bad if bad else t.text_dim))
+                self.ptrs.append((dot, sl.cell.target, 8, sl.cell.target_status))
+            self.tip(QRectF(x, y, name_w, h), sl.cell.tooltip)
+            self.tip(dr, sl.cell.tooltip + ("\n(The line is highlighted in the editor while you point at it.)" if sl.line else ""))
+            if sl.line:
+                self.line_links.append((cr.united(dr), sl.line))
+            if c.show_addresses and gutter_x is not None:
+                self.text(QRectF(gutter_x, y + 4, ADDR_W - 8, CELL_H), f"0x{sl.cell.addr:x}", c.f_mono_small, t.address, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        return w, h
+
     def frame_card(self, f: FrameView, x: float, y: float, width: float | None, emit: bool) -> tuple[float, float]:
         t = self.t
         c = self.c
+        slots = f.slots if c.show_frame_info else []
         name_w = self.name_width(f.vars)
+        if slots:
+            name_w = max(name_w, max(self.fm_ui_bold.horizontalAdvance(self.SLOT_LABELS[s.kind][0]) + 6 for s in slots))
         head_h = 24.0
         title = f"{f.func}()"
         right = (f"line {f.line}" if f.line else "") if not f.is_top else (f"next: line {f.line}" if f.line else "")
         w = self.fm_title.horizontalAdvance(title) + self.fm_ui.horizontalAdvance(right) + 40
+        slot_rows = []
+        for sl in slots:
+            sw, sh = self.slot_row(sl, 0, 0, name_w, False)
+            slot_rows.append((sw, sh))
+            w = max(w, sw + 2 * INNER)
+        slot_h = sum(sh for _, sh in slot_rows) + 6 if slot_rows else 0.0
         rows = []
         for v in f.vars:
             rw, rh = self.var_row(v, 0, 0, name_w, False)
@@ -298,7 +356,7 @@ class _Layout:
             w = max(w, 160)
         foot_h = 22.0 if f.ret_text is not None else 0.0
         body_h = sum(rh for _, rh in rows) if rows else 22.0
-        h = head_h + body_h + 6 + foot_h
+        h = head_h + slot_h + body_h + 6 + foot_h
         if width is not None:
             w = max(w, width)
         if not emit:
@@ -318,10 +376,30 @@ class _Layout:
         if c.show_addresses:
             tip += f"\nframe starts below 0x{f.base:x}"
         self.tip(hr, tip)
-        if f.header_problem:
+        if f.header_problem and not slots:
             self.rect(QRectF(x + 2, y + head_h - 4, w - 4, 4), t.problem_border, None, 1)
-            self.tip(QRectF(x, y + head_h - 6, w, 8), "The return address of this function (stored at the top of its frame) was overwritten!")
+            self.tip(
+                QRectF(x, y + head_h - 6, w, 8),
+                "The return address or the saved frame pointer at the top of this frame was overwritten!\n"
+                "(View > Show return addresses shows them.)",
+            )
         cy = y + head_h + 3
+        if slots:
+            band = QRectF(x + 1.5, y + head_h, w - 3, slot_h)
+            fill = QColor(t.frame_header)
+            fill.setAlpha(110)
+            self.rect(band, fill, None, 0)
+            self.tip(
+                QRectF(x + w - 60, y + head_h, 60, slot_h),
+                "The top of every stack frame holds two 8-byte bookkeeping slots:\n"
+                "- the return address: where the program continues after the function returns,\n"
+                "- the saved frame pointer: the caller's frame pointer, restored on return.",
+            )
+            for sl, (_, sh) in zip(slots, slot_rows):
+                self.slot_row(sl, x + INNER, cy, name_w, True, gutter_x=x - ADDR_W)
+                cy += sh
+            self.ops.append(("line", QPointF(x + 6, y + head_h + slot_h), QPointF(x + w - 6, y + head_h + slot_h), t.frame_border, True))
+            cy += 6
         if not f.vars:
             self.text(QRectF(x + INNER, cy, w - 2 * INNER, 20), "(no local variables)", c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.depth += 1
@@ -513,6 +591,7 @@ class _Layout:
 
 class MemoryCanvas(QWidget):
     zoomChanged = Signal(float)
+    lineHovered = Signal(object)  # a source line number, or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -521,6 +600,8 @@ class MemoryCanvas(QWidget):
         self.zoom = 1.0
         self.show_addresses = True
         self.show_bytes = False
+        self.show_frame_info = False
+        self.hover_line: int | None = None
         self.stale = False
         self.placeholder = "Press Run (F5) to start the program.\nThe stack and the heap will appear here."
         self.f_mono = mono_font(9.5)
@@ -626,6 +707,13 @@ class MemoryCanvas(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(color)
                 p.drawEllipse(pt, 4.0, 4.0)
+            elif kind == "line":
+                _, p1, p2, color, dash = op
+                pen = QPen(color, 1.0)
+                if dash:
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawLine(p1, p2)
             elif kind == "hatch":
                 _, r, color = op
                 p.save()
@@ -652,13 +740,16 @@ class MemoryCanvas(QWidget):
             r, to_end = lay.resolve(target, tsize, status)
             bad = status in ("dangling", "wild")
             ghost = status == "ghost"
-            color = t.freed_border if ghost else (t.arrow_bad if bad else t.arrow)
+            if status == "frame":
+                color = t.text_dim
+            else:
+                color = t.freed_border if ghost else (t.arrow_bad if bad else t.arrow)
             pen = QPen(color, 2.2 if self.hover_ptr == i else (1.0 if ghost else 1.5))
             if bad or ghost:
                 pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            if r is None and status == "ghost":
+            if r is None and status in ("ghost", "frame"):
                 continue
             if r is None:
                 # Target not shown: a short stub with a cross.
@@ -716,9 +807,23 @@ class MemoryCanvas(QWidget):
             if abs(src.x() - pos.x()) < 9 and abs(src.y() - pos.y()) < 9:
                 hit = i
                 break
+        line = None
+        for r, ln in self.layout_.line_links:
+            if r.contains(pos):
+                line = ln
+                break
+        if line != self.hover_line:
+            self.hover_line = line
+            self.lineHovered.emit(line)
         if hit != self.hover_ptr:
             self.hover_ptr = hit
             self.update()
+
+    def leaveEvent(self, ev) -> None:
+        if self.hover_line is not None:
+            self.hover_line = None
+            self.lineHovered.emit(None)
+        super().leaveEvent(ev)
 
     def wheelEvent(self, ev) -> None:
         if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
