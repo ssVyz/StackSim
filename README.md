@@ -1,6 +1,6 @@
-# stacksim
+# StackSim
 
-**stacksim** is a teaching tool for people who are new to C or to manual memory
+**StackSim** is a teaching tool for people who are new to C or to manual memory
 management. You write a small C program, press **Run**, and stacksim executes it
 in a simulated computer, recording every step. You can then play the program
 forwards and backwards, in slow motion or line by line, and watch what happens
@@ -90,3 +90,7 @@ or backwards, then decodes the memory into frames, variables, heap blocks and
 pointer arrows.
 
 See [CHANGELOG.md](CHANGELOG.md) for the version history.
+
+## AI disclosure
+
+This program is made using agentic programming with claude code. (mostly Opus 5.5)
