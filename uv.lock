@@ -92,7 +92,7 @@ wheels = [
 
 [[package]]
 name = "stacksim"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "pyside6-essentials" },

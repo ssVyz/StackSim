@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2026-10-15
+
+### Added
+
+- *View > Show leftover stack values* (off by default, remembered): a dashed stack-pointer line marks the end of the stack in use; below it, faded cards show the leftover bytes of variables whose block has ended ("main() - ended block") and of functions that have returned ("f() - has returned"), until a new variable or call reuses the memory. Dangling pointers to dead stack variables now point at these leftovers, and writes through them visibly change the leftover.
+- Explanations when values become leftovers and when new variables or frames take over their memory (e.g. "y is placed in the memory where i used to be - it has no value yet, so it shows i's leftover bytes").
+- *Run > Frame limit*: a program may nest at most 15 function calls by default (2 to 200), so recursion stays small enough to follow; deeper calls end in a stack overflow that explains the limit. The limit is also available as `max_frames` in `run_source`/`execute`.
+- Tests for leftover values, the frame limit and the new view option.
+
+### Changed
+
+- Stack frames are no longer collapsed into "... more stack frames" in the app; every frame is drawn (collapsing remains only as a safety net above 250 frames).
+
 ## [0.0.3] - 2026-10-15
 
 ### Added

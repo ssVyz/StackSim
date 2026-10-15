@@ -13,8 +13,10 @@ def compile_errors(src: str):
     return cr.errors
 
 
-def run_ok(src: str, stdin: str = "", max_steps: int | None = None):
+def run_ok(src: str, stdin: str = "", max_steps: int | None = None, max_frames: int | None = None):
     kwargs = {} if max_steps is None else {"max_steps": max_steps}
+    if max_frames is not None:
+        kwargs["max_frames"] = max_frames
     cr, tr = run_source(src, stdin, **kwargs)
     assert tr is not None, "compile failed: " + "; ".join(d.format() for d in cr.diagnostics)
     return cr, tr

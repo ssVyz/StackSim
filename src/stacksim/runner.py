@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 from .c.compiler import CompileResult, compile_source
-from .vm.interpreter import DEFAULT_MAX_STEPS, execute
+from .vm.interpreter import DEFAULT_MAX_FRAMES, DEFAULT_MAX_STEPS, execute
 from .vm.trace import Trace
 
 
@@ -14,13 +14,14 @@ def run_source(
     stdin: bytes | str = b"",
     max_steps: int = DEFAULT_MAX_STEPS,
     cancel: threading.Event | None = None,
+    max_frames: int = DEFAULT_MAX_FRAMES,
 ) -> tuple[CompileResult, Trace | None]:
     if isinstance(stdin, str):
         stdin = stdin.encode("utf-8")
     result = compile_source(source)
     if not result.ok:
         return result, None
-    trace = execute(result.program, stdin, max_steps, cancel, source)
+    trace = execute(result.program, stdin, max_steps, cancel, source, max_frames)
     return result, trace
 
 

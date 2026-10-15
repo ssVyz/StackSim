@@ -7,7 +7,8 @@ forwards and backwards, in slow motion or line by line, and watch what happens
 in memory:
 
 - the **stack**, with one frame per function call and every local variable, and
-  optionally each frame's return address and saved frame pointer,
+  optionally each frame's return address and saved frame pointer and the
+  leftover values that dead variables leave behind below the stack pointer,
 - the **heap**, with every block from `malloc`/`calloc`/`realloc`,
 - **static data** (globals, `static` variables, string literals),
 - **pointers** as arrows to what they point to.

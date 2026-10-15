@@ -136,6 +136,34 @@ def test_out_of_bounds_message_names_the_slot():
     assert any("return address stored in f()'s stack frame" in m for m in msgs)
 
 
+RECURSE = "int f(int n) { return n == 0 ? 0 : 1 + f(n - 1); }\nint main(void) { return f(%d); }\n"
+
+
+def test_default_frame_limit_is_15_frames():
+    _, tr = run_ok(RECURSE % 13)  # main + 14 calls of f = 15 frames
+    assert tr.end_reason == "exit" and tr.exit_code == 13
+    _, tr = run_ok(RECURSE % 14)  # would need 16 frames
+    assert tr.end_reason == "error"
+    assert tr.fatal.kind == "stack-overflow"
+    assert "more than 15 stack frames" in tr.fatal.message
+    assert "Frame limit" in tr.fatal.hint
+    assert max(fr.depth for fr in tr.frames) == 14
+
+
+def test_frame_limit_is_configurable():
+    _, tr = run_ok(RECURSE % 40, max_frames=50)
+    assert tr.end_reason == "exit" and tr.exit_code == 40
+    _, tr = run_ok(RECURSE % 40, max_frames=10)
+    assert tr.fatal.kind == "stack-overflow" and "more than 10" in tr.fatal.message
+
+
+def test_big_local_arrays_still_overflow_the_stack_bytes():
+    src = "int f(void) { char big[100000]; big[0] = 1; return big[0]; }\nint g(void) { return f() + f(); }\nint main(void) { char more[60000]; more[0] = 0; return g(); }\n"
+    _, tr = run_ok(src)
+    assert tr.fatal.kind == "stack-overflow"
+    assert "stack is full" in tr.fatal.message
+
+
 def test_qsort_callback_returns_into_the_library():
     src = """\
 #include <stdlib.h>

@@ -53,6 +53,28 @@ CPU did with these slots. If a local array overflows into them, they are marked
 function returns. (A real program would now jump to a garbage address and
 crash; stacksim reports it and continues as if the slots were intact.)
 
+### Leftover stack values
+
+When a block ends (for example a `for` loop with `int i`) or a function
+returns, its variables no longer exist, and the stack pointer moves back up.
+But the memory is not cleared: the old values stay where they were until a new
+variable or function call uses that memory.
+
+*View > Show leftover stack values* (off by default) shows this. A dashed
+**stack pointer** line marks the end of the stack in use; everything below it
+is free stack space. Below the line, faded, hatched cards show what is left:
+
+- **"main() - ended block"**: variables of `main()` whose block has ended, such as a loop variable after the loop.
+- **"square() - has returned"**: the leftover frame of a function that has returned, including its return address and saved frame pointer if *Show return addresses* is on.
+
+A leftover disappears as soon as anything new uses any of its bytes. The
+explanation panel says when that happens, e.g. "y is placed in the memory where
+i (of main()) used to be - it has no value yet, so it shows i's leftover bytes".
+A dangling pointer to a variable that no longer exists points to its leftover,
+and writing through such a pointer changes the leftover, which is a good way to see
+why it is undefined behavior. Leftovers are not variables: C does not let a
+program use them, so they are shown only to explain what is in memory.
+
 ## Static data and heap (right)
 
 **Static data** holds global variables, `static` variables and the string
@@ -79,6 +101,7 @@ values of that type; before that it is shown as raw bytes.
 | blue dot with an arrow | a pointer, and what it points to |
 | red dashed arrow | a dangling pointer (to freed memory or to a variable that no longer exists) or a pointer to memory that belongs to nothing |
 | grey arrow between frames | a saved frame pointer, pointing to the caller's frame (only with *Show return addresses*) |
+| faded, dashed row or card below the stack pointer | a leftover value of a variable that no longer exists (only with *Show leftover stack values*) |
 | grey dashed arrow | a pointer stored inside a freed block |
 | short line ending in a cross | the pointer points somewhere that is not shown |
 | `NULL` | a pointer that points to nothing |

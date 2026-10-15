@@ -37,6 +37,7 @@ from .values import Blob, Ptr, decode, encode, fmt_value, truthy
 
 NORMAL, BREAK, CONTINUE, RETURN = 0, 1, 2, 3
 DEFAULT_MAX_STEPS = 50000
+DEFAULT_MAX_FRAMES = 15  # nested function calls (main included); a teaching limit, see push_frame
 WARNINGS_PER_SITE = 3
 
 
@@ -91,12 +92,21 @@ def _path_in(ty: T.CType | None, off: int) -> str:
 
 
 class VM:
-    def __init__(self, program: Program, stdin: bytes = b"", max_steps: int = DEFAULT_MAX_STEPS, cancel: threading.Event | None = None, source: str = ""):
+    def __init__(
+        self,
+        program: Program,
+        stdin: bytes = b"",
+        max_steps: int = DEFAULT_MAX_STEPS,
+        cancel: threading.Event | None = None,
+        source: str = "",
+        max_frames: int = DEFAULT_MAX_FRAMES,
+    ):
         self.prog = program
         self.source = source
         self.stdin = stdin
         self.stdin_pos = 0
         self.max_steps = max_steps
+        self.max_frames = max_frames
         self.cancel = cancel
 
         self.mem = Memory()
@@ -705,14 +715,17 @@ class VM:
 
     def push_frame(self, fd: A.FuncDef, call_line: int | None, node=None) -> FrameRec:
         parent = self.frame
-        rec = FrameRec(len(self.frames), fd.name, parent.id if parent is not None else None, (parent.depth + 1) if parent else 0, call_line, len(self.steps), self.sp)
-        rec.fd = fd
-        self.frames.append(rec)
+        depth = (parent.depth + 1) if parent else 0
         # Like on x86-64, the stack is 16-byte aligned at every call (this may
         # leave a few unused bytes below the caller's variables).
         top = self.sp & ~15
+        if depth + 1 > self.max_frames:
+            self.frame_limit(fd, node)
         if top - 16 < self.stack.base:
             self.stack_overflow(fd, node)
+        rec = FrameRec(len(self.frames), fd.name, parent.id if parent is not None else None, depth, call_line, len(self.steps), self.sp)
+        rec.fd = fd
+        self.frames.append(rec)
         # The call instruction pushes the return address; the function's prologue
         # then pushes the caller's frame pointer. The address of that saved frame
         # pointer becomes this frame's own frame pointer.
@@ -775,6 +788,16 @@ class VM:
                 + "stacksim warns and continues as if it were intact.",
                 addrs=[(fo.addr, 8)],
             )
+
+    def frame_limit(self, fd, node=None) -> None:
+        self.fatal(
+            "stack-overflow",
+            f"stack overflow: calling {fd.name}() would need more than {self.max_frames} stack frames",
+            node if node is not None else fd.body,
+            hint="This usually means endless recursion: a function that keeps calling itself without reaching its base case. "
+            f"To keep the picture readable, stacksim allows at most {self.max_frames} nested calls (Run > Frame limit). "
+            "A real stack has room for thousands of frames, but it runs out the same way.",
+        )
 
     def stack_overflow(self, fd, node=None) -> None:
         depth = (self.frame.depth + 1) if self.frame else 0
@@ -1474,7 +1497,14 @@ class VM:
         return self.call_function(fd, args, [a.ty for a in e.args], e)
 
 
-def execute(program: Program, stdin: bytes = b"", max_steps: int = DEFAULT_MAX_STEPS, cancel: threading.Event | None = None, source: str = "") -> Trace:
+def execute(
+    program: Program,
+    stdin: bytes = b"",
+    max_steps: int = DEFAULT_MAX_STEPS,
+    cancel: threading.Event | None = None,
+    source: str = "",
+    max_frames: int = DEFAULT_MAX_FRAMES,
+) -> Trace:
     """Run ``program`` in a thread with a large stack (deep C recursion needs deep Python recursion)."""
     result: dict = {}
 
@@ -1482,7 +1512,7 @@ def execute(program: Program, stdin: bytes = b"", max_steps: int = DEFAULT_MAX_S
         old = sys.getrecursionlimit()
         sys.setrecursionlimit(max(old, 400_000))
         try:
-            result["trace"] = VM(program, stdin, max_steps, cancel, source).run()
+            result["trace"] = VM(program, stdin, max_steps, cancel, source, max_frames).run()
         except BaseException as exc:  # pragma: no cover - surfaced to the caller
             result["error"] = exc
 

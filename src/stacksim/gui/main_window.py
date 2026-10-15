@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..c.compiler import CompileResult, compile_source
 from ..viewmodel import MemoryState, ViewBuilder
-from ..vm.interpreter import DEFAULT_MAX_STEPS, execute
+from ..vm.interpreter import DEFAULT_MAX_FRAMES, DEFAULT_MAX_STEPS, execute
 from ..vm.trace import Trace
 from .canvas import MemoryCanvas
 from .editor import CodeEditor
@@ -89,6 +89,8 @@ class MainWindow(QMainWindow):
         self.out_sig: tuple = (0, None)
         self.file_path: str | None = None
         self.max_steps = int(self.settings.value("max_steps", DEFAULT_MAX_STEPS))
+        self.max_frames = int(self.settings.value("max_frames", DEFAULT_MAX_FRAMES))
+        self.show_ghosts = False
         self.bridge = _Bridge()
         self.bridge.finished.connect(self.on_run_finished)
         self.timer = QTimer(self)
@@ -277,6 +279,7 @@ class MainWindow(QMainWindow):
         rm.addAction(act("Toggle breakpoint", self.toggle_breakpoint_at_cursor, "F9"))
         rm.addAction(act("Clear all breakpoints", self.clear_breakpoints))
         rm.addAction(act("Step limit...", self.ask_step_limit))
+        rm.addAction(act("Frame limit...", self.ask_frame_limit))
 
         vm = mb.addMenu("&View")
         self.act_addr = act("Show addresses", lambda c: self.set_canvas_option("show_addresses", c), checkable=True)
@@ -288,7 +291,13 @@ class MainWindow(QMainWindow):
             tip="Show the return address and the saved frame pointer at the top of every stack frame",
             checkable=True,
         )
-        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames):
+        self.act_ghosts = act(
+            "Show leftover stack values",
+            lambda c: self.set_canvas_option("show_ghosts", c),
+            tip="Show values that are still in stack memory although their variable no longer exists",
+            checkable=True,
+        )
+        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames, self.act_ghosts):
             vm.addAction(a)
         vm.addSeparator()
         vm.addAction(act("Zoom in", lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15), "Ctrl++"))
@@ -296,7 +305,7 @@ class MainWindow(QMainWindow):
         vm.addAction(act("Reset zoom", lambda: self.canvas.set_zoom(1.0), "Ctrl+0"))
 
         tb.addSeparator()
-        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames):
+        for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames, self.act_ghosts):
             tb.addAction(a)
 
         hm = mb.addMenu("&Help")
@@ -335,6 +344,8 @@ class MainWindow(QMainWindow):
         self.act_bytes.setChecked(flag("show_bytes", False))
         self.act_freed.setChecked(flag("show_freed", True))
         self.act_frames.setChecked(flag("show_frame_info", False))
+        self.act_ghosts.setChecked(flag("show_ghosts", False))
+        self.show_ghosts = self.act_ghosts.isChecked()
         self.canvas.show_addresses = self.act_addr.isChecked()
         self.canvas.show_bytes = self.act_bytes.isChecked()
         self.canvas.show_frame_info = self.act_frames.isChecked()
@@ -356,6 +367,8 @@ class MainWindow(QMainWindow):
         s.setValue("show_bytes", self.act_bytes.isChecked())
         s.setValue("show_freed", self.act_freed.isChecked())
         s.setValue("show_frame_info", self.act_frames.isChecked())
+        s.setValue("show_ghosts", self.act_ghosts.isChecked())
+        s.setValue("max_frames", self.max_frames)
         s.setValue("max_steps", self.max_steps)
 
     def closeEvent(self, ev) -> None:
@@ -468,10 +481,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Running... (the whole run is recorded, then you can move through it)")
         cancel = self.cancel
         max_steps = self.max_steps
+        max_frames = self.max_frames
 
         def work():
             try:
-                trace = execute(result.program, stdin, max_steps, cancel, src)
+                trace = execute(result.program, stdin, max_steps, cancel, src, max_frames)
                 self.bridge.finished.emit(result, trace, None)
             except Exception:  # pragma: no cover - internal errors are shown to the user
                 self.bridge.finished.emit(result, None, traceback.format_exc())
@@ -783,10 +797,21 @@ class MainWindow(QMainWindow):
         if ok:
             self.max_steps = v
 
+    def ask_frame_limit(self) -> None:
+        v, ok = QInputDialog.getInt(
+            self, "Frame limit",
+            "Stop the program when it needs more than this many stack frames\n"
+            "(nested function calls, main included). This keeps recursion small\n"
+            "enough to follow; endless recursion ends in a stack overflow.",
+            self.max_frames, 2, 200, 1,
+        )
+        if ok:
+            self.max_frames = v
+
     def set_canvas_option(self, name: str, value: bool) -> None:
-        if name == "show_freed":
-            self.show_freed = value
-            if self.trace is not None:
+        if name in ("show_freed", "show_ghosts"):
+            setattr(self, name, value)
+            if self.trace is not None and not self.stale:
                 self.goto(self.pos)
             return
         self.canvas.set_option(name, value)
@@ -802,7 +827,7 @@ class MainWindow(QMainWindow):
             self.pause()
         step = max(0, min(step, self.last_step()))
         self.pos = step
-        state = self.builder.build(step, show_freed=self.show_freed)
+        state = self.builder.build(step, show_freed=self.show_freed, show_ghosts=self.show_ghosts)
         self.state = state
         self.canvas.set_state(state)
         self.editor.set_exec_lines(state.line, state.prev_line, error=state.kind == "error")
@@ -935,6 +960,12 @@ class MainWindow(QMainWindow):
                 + (f" (line {d.line})" if d.line else "")
                 + f":</b> {html.escape(d.message)}</div>"
                 + (f"<div style='color:{color}; margin-left:12px'><i>{html.escape(d.hint)}</i></div>" if d.hint else "")
+            )
+        if s.ghost_notes:
+            parts.append(
+                f"<div style='color:{t.text_dim.name()}; margin-top:4px'>"
+                + "<br>".join(html.escape(n) for n in s.ghost_notes)
+                + "</div>"
             )
         if self.canvas.show_frame_info and s.frame_notes:
             parts.append(

@@ -18,7 +18,7 @@ from .vm.trace import Cursor, FrameRec, MemObject, Trace
 from .vm.values import char_repr, decode, fmt_float
 
 MAX_ARRAY_CELLS = 64
-MAX_FRAMES_SHOWN = 14
+MAX_FRAMES_SHOWN = 250  # above the app's frame limit; only a safety net for very deep runs
 MAX_FREED_SHOWN = 8
 MAX_SCAN_BYTES = 64 * 1024
 
@@ -76,6 +76,8 @@ class VarView:
     is_new: bool
     problem: bool = False
     note: str = ""
+    ghost: bool = False  # a leftover: the variable no longer exists, but its bytes are still there
+    ghost_reason: str = ""
 
 
 @dataclass
@@ -101,6 +103,8 @@ class FrameView:
     header_problem: bool = False
     depth: int = 0
     base: int = 0
+    ghost: bool = False  # leftovers below the stack pointer
+    ghost_scope: bool = False  # ...of ended blocks of a function that is still running
 
 
 @dataclass
@@ -140,6 +144,9 @@ class MemoryState:
     leaked_bytes: int
     problem_ranges: list[tuple[int, int]] = field(default_factory=list)
     frame_notes: list[str] = field(default_factory=list)  # explanations about return addresses
+    show_ghosts: bool = False
+    ghost_frames: list[FrameView] = field(default_factory=list)  # leftovers of returned functions
+    ghost_notes: list[str] = field(default_factory=list)  # explanations about leftover values
 
 
 def _overlaps(ranges: list[tuple[int, int]], addr: int, size: int) -> bool:
@@ -182,13 +189,77 @@ class _ObjectIndex:
         return None
 
 
+STACK_KINDS = ("local", "param", "retaddr", "savedfp")
+
+
 class ViewBuilder:
     def __init__(self, trace: Trace):
         self.trace = trace
         self.cursor = Cursor(trace)
         self.mem: Memory = trace.memory
+        self.stack_objs = [o for o in trace.objects if o.kind in STACK_KINDS]
+        self._taken: dict[int, tuple[int, int]] | None = None
+        self._taken_at: dict[int, list[tuple[int, int]]] = {}
+        self.ghosts: list[MemObject] = []
 
-    def build(self, step: int, show_freed: bool = True) -> MemoryState:
+    # ---------------------------------------------------------- leftovers
+
+    def takeovers(self) -> dict[int, tuple[int, int]]:
+        """For every stack object: (step, object id) of the first newer object that used any of its bytes.
+
+        Objects are created in step order, so one sweep over them, keeping the
+        latest owner of every byte range, finds all takeovers.
+        """
+        if self._taken is not None:
+            return self._taken
+        taken: dict[int, tuple[int, int]] = {}
+        starts: list[int] = []
+        ivs: list[list[int]] = []  # sorted, non-overlapping [start, end, owner]
+        for o in self.stack_objs:
+            a, b = o.addr, o.addr + max(o.size, 1)
+            i = max(0, bisect.bisect_right(starts, a) - 1)
+            j = i
+            pieces = []
+            while j < len(ivs) and ivs[j][0] < b:
+                s0, e0, q = ivs[j]
+                if e0 > a:
+                    if q not in taken:
+                        taken[q] = (o.birth, o.id)
+                    if s0 < a:
+                        pieces.append([s0, a, q])
+                    if e0 > b:
+                        pieces.append([b, e0, q])
+                else:
+                    pieces.append([s0, e0, q])
+                j += 1
+            pieces.append([a, b, o.id])
+            pieces.sort()
+            ivs[i:j] = pieces
+            starts[i:j] = [x[0] for x in pieces]
+        self._taken = taken
+        for victim, (st, taker) in taken.items():
+            self._taken_at.setdefault(st, []).append((victim, taker))
+        return taken
+
+    def leftovers(self, step: int) -> list[MemObject]:
+        """Stack objects that no longer exist at ``step`` but whose bytes nothing else has used yet."""
+        taken = self.takeovers()
+        out = []
+        for o in self.stack_objs:
+            if o.birth > step:
+                break
+            d = o.death
+            if d is None or d > step:
+                continue
+            if o.hidden and o.kind not in ("retaddr", "savedfp"):
+                continue
+            t = taken.get(o.id)
+            if t is not None and t[0] <= step:
+                continue
+            out.append(o)
+        return out
+
+    def build(self, step: int, show_freed: bool = True, show_ghosts: bool = False) -> MemoryState:
         tr = self.trace
         step = max(0, min(step, len(tr.steps) - 1))
         self.cursor.goto(step)
@@ -202,7 +273,9 @@ class ViewBuilder:
         self.index = _ObjectIndex(alive)
         self.alive_ids = {o.id for o in alive}
 
+        self.ghosts = self.leftovers(step) if show_ghosts else []
         frames, hidden = self.build_frames(step)
+        ghost_frames = self.build_ghost_frames(step) if show_ghosts else []
         statics = self.build_statics(alive)
         heap_live = [o for o in alive if o.kind == "heap"]
         reachable = self.reachable(alive, heap_live)
@@ -246,6 +319,9 @@ class ViewBuilder:
             leaked_bytes=sum(b.size for b in leaked),
             problem_ranges=self.problem_ranges,
             frame_notes=self.frame_notes(step),
+            show_ghosts=show_ghosts,
+            ghost_frames=ghost_frames,
+            ghost_notes=self.ghost_notes(step) if show_ghosts else [],
         )
 
     # ------------------------------------------------------------- pieces
@@ -292,6 +368,85 @@ class ViewBuilder:
                 )
             )
         return views, hidden
+
+    def ghost_view(self, o: MemObject, reason: str) -> VarView:
+        v = self.var_view(o)
+        v.ghost = True
+        v.ghost_reason = reason
+        v.is_new = False
+        return v
+
+    def build_ghost_frames(self, step: int) -> list[FrameView]:
+        """Leftovers below the stack pointer, grouped by the frame they belonged to.
+
+        Variables of ended blocks of a running function are grouped separately
+        from the leftovers of functions that have returned.
+        """
+        tr = self.trace
+        live = {fr.id for fr in tr.frame_chain(step)}
+        by_frame: dict[int, list[MemObject]] = {}
+        for g in self.ghosts:
+            if g.frame is not None:
+                by_frame.setdefault(g.frame, []).append(g)
+        views = []
+        for fid, objs in by_frame.items():
+            fr = tr.frames[fid]
+            ids = {o.id for o in objs}
+            scope = fid in live
+            reason = "out of scope" if scope else f"{fr.func}() has returned"
+            rows = [self.ghost_view(o, reason) for o in objs if o.kind in ("local", "param")]
+            if scope and not rows:
+                continue
+            rows.sort(key=lambda v: -v.addr)
+            slots = [sl for sl in self.frame_slots(fr) if (fr.ret_obj if sl.kind == "retaddr" else fr.fp_obj) in ids]
+            views.append(
+                FrameView(
+                    id=fr.id, func=fr.func, line=None, vars=rows, is_top=False, ret_text=None,
+                    slots=[] if scope else slots, depth=fr.depth, base=fr.base, ghost=True, ghost_scope=scope,
+                )
+            )
+        views.sort(key=lambda f: -max([v.addr for v in f.vars] + [sl.cell.addr for sl in f.slots] + [0]))
+        return views
+
+    def ghost_notes(self, step: int) -> list[str]:
+        """Explanations of leftover values that appear or are overwritten in this step."""
+        tr = self.trace
+        notes = []
+        named = [g for g in self.ghosts if g.death == step and g.kind in ("local", "param")]
+        live = {fr.id for fr in tr.frame_chain(step)}
+        scoped = [g.name for g in named if g.frame in live]
+        if scoped:
+            one = len(scoped) == 1
+            notes.append(
+                f"{', '.join(scoped)} {'is' if one else 'are'} out of scope now, but {'its value stays' if one else 'their values stay'} "
+                "in memory (faded, below the stack pointer) until something else uses that memory."
+            )
+        returned = sorted({tr.frames[g.frame].func for g in named if g.frame not in live})
+        for func in returned:
+            notes.append(f"{func}() has returned, but its old bytes are still there below the stack pointer (faded).")
+        self.takeovers()
+        for victim, taker in self._taken_at.get(step, []):
+            v, t = tr.objects[victim], tr.objects[taker]
+            if v.kind not in ("local", "param") or v.hidden or v.death is None or v.death > step:
+                continue
+            owner = tr.frames[v.frame].func if v.frame is not None else "?"
+            if t.kind in ("local", "param") and not t.hidden:
+                got = self.mem.peek(t.addr, t.size)
+                unset = got is not None and 0 in got[1]
+                notes.append(
+                    f"{t.name} is placed in the memory where {v.name} (of {owner}()) used to be"
+                    + (f" - it has no value yet, so it shows {v.name}'s leftover bytes." if unset else ".")
+                )
+            elif t.kind in ("retaddr", "savedfp"):
+                notes.append(f"The new stack frame of {t.name}() reuses the memory of the old {v.name} (of {owner}()).")
+        # one line per takeover reason is enough
+        seen = set()
+        out = []
+        for n in notes:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+        return out[:6]
 
     def frame_slots(self, fr: FrameRec) -> list[FrameSlot]:
         """The return address and the saved frame pointer at the top of a frame."""

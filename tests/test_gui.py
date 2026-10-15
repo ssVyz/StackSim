@@ -206,3 +206,42 @@ def test_return_address_toggle(window, qapp, tmp_path):
     # the choice is remembered
     w.save_settings()
     assert w.settings.value("show_frame_info") in (True, "true")
+
+
+def test_leftover_values_toggle(window, qapp):
+    w = window
+    load(w, "Returning a pointer")
+    run_and_wait(w, qapp)
+    after_return = next(i for i, s in enumerate(w.trace.steps) if s.line == 15)
+    w.goto(after_return)
+    assert not w.act_ghosts.isChecked(), "hidden by default"
+    assert w.state.ghost_frames == []
+
+    w.act_ghosts.setChecked(True)
+    w.set_canvas_option("show_ghosts", True)
+    assert [g.func for g in w.state.ghost_frames] == ["make_number"]
+    lay = w.canvas.layout_
+    texts = [op[2] for op in lay.ops if op[0] == "text"]
+    assert any("stack pointer" in t for t in texts)
+    assert any("make_number() - has returned" in t for t in texts)
+    assert "make_number() has returned" in w.explain.toPlainText()
+    # the dangling pointer now has a drawn target: the leftover n
+    n_addr = w.state.ghost_frames[0].vars[0].addr
+    assert lay.resolve(n_addr, 4, "dangling")[0] is not None
+
+    w.save_settings()
+    assert w.settings.value("show_ghosts") in (True, "true")
+
+
+def test_frame_limit_setting_is_used_for_runs(window, qapp):
+    w = window
+    load(w, "Recursion: factorial")  # factorial(4): main + 4 frames
+    w.max_frames = 3
+    run_and_wait(w, qapp)
+    assert w.trace.end_reason == "error"
+    assert "more than 3 stack frames" in w.trace.fatal.message
+    w.max_frames = 15
+    run_and_wait(w, qapp)
+    assert w.trace.end_reason == "exit"
+    w.save_settings()
+    assert int(w.settings.value("max_frames")) == 15

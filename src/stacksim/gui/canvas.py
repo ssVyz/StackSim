@@ -41,7 +41,8 @@ class _Layout:
         self.fm_tiny = QFontMetricsF(canvas.f_tiny)
         self.fm_title = QFontMetricsF(canvas.f_title)
         self.depth = 0
-        self.ghost = 0
+        self.ghost = 0  # > 0 while drawing memory that no longer belongs to anything (grey arrows)
+        self.fade = 0  # > 0 while drawing leftover stack values (faded cells)
         self.frame_rects: dict[int, QRectF] = {}
         self.line_links: list[tuple[QRectF, int]] = []  # hovering these highlights a source line
 
@@ -94,6 +95,8 @@ class _Layout:
         t = self.t
         c = self.c
         fill, border, color = t.box_fill, t.box_border, t.text
+        if self.fade:
+            fill, border, color = t.freed_fill, t.freed_border, t.text_dim
         if not cell.init:
             fill, color = t.uninit_fill, t.uninit_text
         if cell.changed:
@@ -255,6 +258,8 @@ class _Layout:
         vw, vh = self.place(v.value, 0, 0, False)
         h = max(34.0, vh + 8)
         w = name_w + 8 + vw
+        if v.ghost and v.ghost_reason == "out of scope":
+            w = max(w, self.fm_tiny.horizontalAdvance(v.type_name + " - out of scope") + 8)
         addr_text = f"0x{v.addr:x}"
         inline_addr = c.show_addresses and gutter_x is None
         if inline_addr:
@@ -262,16 +267,29 @@ class _Layout:
         if emit:
             if v.problem:
                 self.rect(QRectF(x - 4, y + 1, w + 8, h - 2), t.problem_fill, t.problem_border, 4, 1.5)
+            elif v.ghost:
+                self.rect(QRectF(x - 4, y + 1, w + 8, h - 2), None, t.freed_border, 4, 1.0, dash=True)
             name = v.name if self.fm_ui_bold.horizontalAdvance(v.name) <= name_w else v.name[: max(3, int(name_w / 8))] + "..."
-            self.text(QRectF(x, y + 3, name_w, 16), name, c.f_ui_bold, t.text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.text(QRectF(x, y + 18, name_w, 13), v.type_name, c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.tip(
-                QRectF(x, y, name_w, h),
-                f"{v.name}: {v.type_name}\n{v.size} byte{'s' if v.size != 1 else ''} at 0x{v.addr:x}" + (f"\n{v.note}" if v.note else ""),
-            )
+            self.text(QRectF(x, y + 3, name_w, 16), name, c.f_ui_bold, t.text_dim if v.ghost else t.text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            type_line = v.type_name + (" - out of scope" if v.ghost and v.ghost_reason == "out of scope" else "")
+            self.text(QRectF(x, y + 18, name_w + 120, 13), type_line, c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            tip = f"{v.name}: {v.type_name}\n{v.size} byte{'s' if v.size != 1 else ''} at 0x{v.addr:x}" + (f"\n{v.note}" if v.note else "")
+            if v.ghost:
+                tip += (
+                    f"\n\nLEFTOVER: {v.name} no longer exists ({v.ghost_reason}). Its bytes stay in memory until something "
+                    "else uses this place on the stack. C does not allow using them any more; reading them through an old "
+                    "pointer is undefined behavior."
+                )
+            self.tip(QRectF(x, y, name_w, h), tip)
             vx, vy = x + name_w + 8, y + 4
             self.depth += 1
+            if v.ghost:
+                self.ghost += 1
+                self.fade += 1
             self.place(v.value, vx, vy, True)
+            if v.ghost:
+                self.ghost -= 1
+                self.fade -= 1
             self.depth -= 1
             self.anchor(v.addr, v.size, QRectF(vx, vy, vw, vh))
             ay = vy + (LABEL_H if self._has_labels(v.value) else 0)
@@ -339,7 +357,11 @@ class _Layout:
             name_w = max(name_w, max(self.fm_ui_bold.horizontalAdvance(self.SLOT_LABELS[s.kind][0]) + 6 for s in slots))
         head_h = 24.0
         title = f"{f.func}()"
-        right = (f"line {f.line}" if f.line else "") if not f.is_top else (f"next: line {f.line}" if f.line else "")
+        if f.ghost:
+            title += " - ended block" if f.ghost_scope else " - has returned"
+            right = "leftover memory"
+        else:
+            right = (f"line {f.line}" if f.line else "") if not f.is_top else (f"next: line {f.line}" if f.line else "")
         w = self.fm_title.horizontalAdvance(title) + self.fm_ui.horizontalAdvance(right) + 40
         slot_rows = []
         for sl in slots:
@@ -363,15 +385,32 @@ class _Layout:
             return w, h
         border = t.frame_top_border if f.is_top else t.frame_border
         bw = 2.0 if f.is_top else 1.0
+        fill, head = t.frame_fill, t.frame_header
+        if f.ghost:
+            border, fill, head = t.freed_border, t.freed_fill, t.freed_fill
         r = QRectF(x, y, w, h)
-        self.frame_rects[f.id] = QRectF(r)
-        self.rect(r, t.frame_fill, border, 6, bw)
+        if not f.ghost:
+            self.frame_rects[f.id] = QRectF(r)
+        self.rect(r, fill, border, 6, bw, dash=f.ghost)
+        if f.ghost:
+            self.hatch(r, t.freed_border)
         hr = QRectF(x, y, w, head_h)
-        self.ops.append(("head", hr, t.frame_header, border, bw))
-        self.text(QRectF(x + INNER, y, w - 2 * INNER, head_h), title, c.f_title, t.text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.ops.append(("head", hr, head, border, bw))
+        self.text(QRectF(x + INNER, y, w - 2 * INNER, head_h), title, c.f_title, t.text_dim if f.ghost else t.text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.text(QRectF(x + INNER, y, w - 2 * INNER, head_h), right, c.f_ui, t.frame_top_border if f.is_top else t.text_dim, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         tip = f"Stack frame of {f.func}()"
-        if not f.is_top:
+        if f.ghost and f.ghost_scope:
+            tip = (
+                f"Leftovers of variables of {f.func}() whose block has ended (for example a loop variable).\n"
+                "When the block ended, the stack pointer moved back up, so this memory is free stack space now. "
+                "The old values stay here until a later variable or function call uses the memory."
+            )
+        elif f.ghost:
+            tip = (
+                f"Leftovers of {f.func}()'s stack frame.\n{f.func}() has returned, so this memory is free stack space now. "
+                "The old values stay here until a later function call or variable uses the memory."
+            )
+        elif not f.is_top:
             tip += f"\nwaiting at line {f.line} for the function it called to return"
         if c.show_addresses:
             tip += f"\nframe starts below 0x{f.base:x}"
@@ -395,13 +434,19 @@ class _Layout:
                 "- the return address: where the program continues after the function returns,\n"
                 "- the saved frame pointer: the caller's frame pointer, restored on return.",
             )
+            if f.ghost:
+                self.ghost += 1
+                self.fade += 1
             for sl, (_, sh) in zip(slots, slot_rows):
                 self.slot_row(sl, x + INNER, cy, name_w, True, gutter_x=x - ADDR_W)
                 cy += sh
+            if f.ghost:
+                self.ghost -= 1
+                self.fade -= 1
             self.ops.append(("line", QPointF(x + 6, y + head_h + slot_h), QPointF(x + w - 6, y + head_h + slot_h), t.frame_border, True))
             cy += 6
         if not f.vars:
-            self.text(QRectF(x + INNER, cy, w - 2 * INNER, 20), "(no local variables)", c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.text(QRectF(x + INNER, cy, w - 2 * INNER, 20), "(no leftover variables)" if f.ghost else "(no local variables)", c.f_tiny, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.depth += 1
         for v, (_, rh) in zip(f.vars, rows):
             self.var_row(v, x + INNER, cy, name_w, True, gutter_x=x - ADDR_W)
@@ -511,7 +556,8 @@ class _Layout:
         # ---- left column: the stack (addresses in a gutter on its left)
         x = PAD + (ADDR_W if c.show_addresses else 0)
         frame_sizes = [self.frame_card(f, 0, 0, None, False) for f in s.frames]
-        left_w = max([w for w, _ in frame_sizes] + [300.0])
+        ghost_widths = [self.frame_card(g, 0, 0, None, False)[0] for g in s.ghost_frames] if s.show_ghosts else []
+        left_w = max([w for w, _ in frame_sizes] + ghost_widths + [300.0])
         y = y0
         used = f"{s.stack_bytes} bytes in use" if s.frames else "empty"
         y += self.column_title(PAD, y, "Stack", f"newest call at the bottom - {used}")
@@ -526,6 +572,26 @@ class _Layout:
                 y += 38
             self.frame_card(f, x, y, left_w, True)
             y += fh + 10
+        if s.show_ghosts:
+            ghosts = [g for g in s.ghost_frames if g.vars or (c.show_frame_info and g.slots)]
+            ghost_sizes = [self.frame_card(g, 0, 0, left_w, False) for g in ghosts]
+            # The stack pointer: everything below it is free stack space.
+            self.ops.append(("line", QPointF(PAD, y + 4), QPointF(x + left_w, y + 4), t.frame_top_border, True))
+            label = f"stack pointer = 0x{s.sp:x}" if c.show_addresses else "stack pointer"
+            self.text(
+                QRectF(x, y + 6, left_w, 16),
+                f"{label}  -  free stack space below",
+                c.f_tiny, t.frame_top_border, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
+            self.tip(
+                QRectF(PAD, y, x + left_w - PAD, 24),
+                "The stack pointer marks the end of the stack in use. Memory below it is free: the next function call "
+                "or variable will be placed there. Values left there by functions that have returned stay until then.",
+            )
+            y += 28
+            for g, (gw, gh) in zip(ghosts, ghost_sizes):
+                self.frame_card(g, x, y, left_w, True)
+                y += gh + 10
         left_h = y
         # ---- right column: static data, then the heap
         x2 = x + left_w + COL_GAP

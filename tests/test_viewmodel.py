@@ -164,13 +164,25 @@ def test_large_array_is_truncated():
 
 
 def test_deep_recursion_frames_are_collapsed():
-    src = "int f(int n) { return n == 0 ? 0 : f(n - 1); }\nint main(void) { return f(40); }"
-    tr, vb = build_all(src)
+    # Only reachable with a frame limit far above what the app allows; a safety net for API users.
+    src = "int f(int n) { return n == 0 ? 0 : f(n - 1); }\nint main(void) { return f(300); }"
+    _, tr = run_ok(src, max_frames=400)
+    vb = ViewBuilder(tr)
     deepest = max(range(len(tr.steps)), key=lambda i: tr.frames[tr.steps[i].frame].depth if tr.steps[i].frame is not None else -1)
     s = vb.build(deepest)
     assert s.frames_hidden > 0
     assert s.frames[0].func == "main"
-    assert len(s.frames) + s.frames_hidden == 42
+    assert len(s.frames) + s.frames_hidden == 302
+
+
+def test_frames_up_to_the_app_limit_are_all_shown():
+    src = "int f(int n) { return n == 0 ? 0 : f(n - 1); }\nint main(void) { return f(150); }"
+    _, tr = run_ok(src, max_frames=200)
+    vb = ViewBuilder(tr)
+    deepest = max(range(len(tr.steps)), key=lambda i: tr.frames[tr.steps[i].frame].depth if tr.steps[i].frame is not None else -1)
+    s = vb.build(deepest)
+    assert s.frames_hidden == 0
+    assert len(s.frames) == 152
 
 
 def test_problem_ranges_at_warning_step():
