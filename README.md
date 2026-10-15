@@ -42,6 +42,7 @@ stack overflow.
 |---|---|
 | **Run** (F5) | compile, run and record the program |
 | **Play / Pause** (F6), **Play backwards** (Shift+F6) | play at the speed chosen in the toolbar, from *very slow* to *instant* |
+| **Stop** (Esc) | pause the playback (or cancel a run that takes too long) |
 | **Step** (F10), **Back** (Shift+F10) | one step forward or back |
 | **Step over** (F11), **Back over** (Shift+F11) | the next or previous line of the current function, skipping over calls |
 | **Timeline** | drag to any point of the run; marks show where problems occurred |

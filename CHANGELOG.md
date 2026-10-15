@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] - 2026-10-15
+
+### Fixed
+
+- The Stop button was only active while a run was being recorded, so it could not stop the playback. It now pauses the playback as well (and still cancels a long run); Esc is an additional shortcut.
+
 ## [0.0.5] - 2026-10-15
 
 ### Added

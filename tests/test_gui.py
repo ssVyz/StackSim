@@ -307,3 +307,21 @@ def test_typed_input_is_joined_on_a_new_line(window, qapp):
     assert w.stdin_edit.toPlainText() == "2\n4\n6\n"
     w.goto(w.last_step())
     assert "sum = 10" in w.output.toPlainText().replace("\n", " ")
+
+
+def test_stop_pauses_playback(window, qapp):
+    w = window
+    load(w, "Linked list")
+    w.speed.setCurrentIndex(1)  # very slow: playback starts right after the run
+    run_and_wait(w, qapp)
+    assert w.timer.isActive(), "playback started"
+    assert w.act_stop.isEnabled(), "Stop is available during playback"
+    assert w.act_play.text() == "Pause"
+    pos = w.pos
+    w.act_stop.trigger()
+    assert not w.timer.isActive()
+    assert w.pos == pos, "stopping keeps the current step"
+    assert not w.act_stop.isEnabled()
+    assert w.act_play.text() == "Play"
+    # Esc is a shortcut for Stop
+    assert "Esc" in [s.toString() for s in w.act_stop.shortcuts()]

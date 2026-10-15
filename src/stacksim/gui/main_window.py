@@ -290,7 +290,9 @@ class MainWindow(QMainWindow):
 
         S = QStyle.StandardPixmap
         self.act_run = act("Run", self.run, "F5", S.SP_MediaPlay, "Compile and run the program, recording every step")
-        self.act_stop = act("Stop", self.stop_run, "Shift+F5", S.SP_MediaStop, "Stop a run that takes too long")
+        self.act_stop = act("Stop", self.stop_run, "Shift+F5", S.SP_MediaStop, "Stop the playback (or a run that takes too long)")
+        self.act_stop.setShortcuts([QKeySequence("Shift+F5"), QKeySequence("Esc")])
+        self.act_stop.setToolTip("Stop the playback (or a run that takes too long)  (Esc or Shift+F5)")
         self.act_first = act("First step", lambda: self.goto(0, pause=True), "Alt+Home", S.SP_MediaSkipBackward, "Go to the first step")
         self.act_back_over = act("Back over", self.step_back_over, "Shift+F11", None, "Go back to the previous line of the current function (skipping over calls)")
         self.act_back = act("Back", self.step_back, "Shift+F10", S.SP_ArrowBack, "Go one step back")
@@ -620,8 +622,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Saved input cleared - the next run asks for input again.", 4000)
 
     def stop_run(self) -> None:
+        """Stop button: cancels a run that is being recorded, otherwise pauses the playback."""
         if self.cancel is not None:
             self.cancel.set()
+        elif self.timer.isActive():
+            self.pause()
 
     def on_run_finished(self, result: CompileResult, trace: Trace | None, err: str | None) -> None:
         self.running = False
@@ -793,7 +798,7 @@ class MainWindow(QMainWindow):
             self.act_play_back.setText("Play backwards")
             self.act_play_back.setIcon(st.standardIcon(QStyle.StandardPixmap.SP_MediaSeekBackward))
         self.act_run.setEnabled(not self.running)
-        self.act_stop.setEnabled(self.running)
+        self.act_stop.setEnabled(self.running or playing)
 
     def on_speed_changed(self, idx: int) -> None:
         if self.timer.isActive():
@@ -1140,7 +1145,7 @@ class MainWindow(QMainWindow):
 
     def show_shortcuts(self) -> None:
         rows = [
-            ("F5", "Run (compile, run and record)"), ("Shift+F5", "Stop a long run"),
+            ("F5", "Run (compile, run and record)"), ("Shift+F5 or Esc", "Stop: pause the playback, or stop a long run"),
             ("F6", "Play / pause"), ("Shift+F6", "Play backwards"),
             ("F10", "One step forward"), ("Shift+F10", "One step back"),
             ("F11", "Step over (stay in the current function)"), ("Shift+F11", "Step back over"),

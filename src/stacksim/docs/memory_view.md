@@ -117,6 +117,7 @@ on or off. Hold **Ctrl** and turn the mouse wheel to zoom.
 |---|---|---|
 | Run | F5 | compile and run the program, recording every step |
 | Play / Pause | F6 | play forward at the chosen speed |
+| Stop | Esc or Shift+F5 | pause the playback (or cancel a run that takes too long) |
 | Play backwards | Shift+F6 | play backward |
 | Step / Back | F10 / Shift+F10 | one step forward / back |
 | Step over / Back over | F11 / Shift+F11 | to the next / previous line of the current function, without going into the functions it calls |
