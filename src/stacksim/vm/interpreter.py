@@ -122,6 +122,7 @@ class VM:
         self.steps: list[Step] = []
         self.diags: list[Diagnostic] = []
         self.pending: list[int] = []
+        self.reads: list[tuple[int, int]] = []  # memory read since the last step (shown in the GUI)
         self.events: list[str] = []
         self.output: list[tuple[str, bytes]] = []
         self.frame: FrameRec | None = None
@@ -176,9 +177,11 @@ class VM:
         log = self.mem.log
         self.mem.log = []
         fr = self.frame
-        steps.append(Step(line, kind, fr.id if fr is not None else None, log, self.events, len(self.output), self.stdin_pos, self.pending, self.sp))
+        reads = tuple(dict.fromkeys(self.reads)) if self.reads else ()
+        steps.append(Step(line, kind, fr.id if fr is not None else None, log, self.events, len(self.output), self.stdin_pos, self.pending, self.sp, reads))
         self.events = []
         self.pending = []
+        self.reads = []
 
     def event(self, text: str) -> None:
         self.events.append(text)
@@ -428,9 +431,14 @@ class VM:
             hint = "Local variables are not set to 0 automatically; they contain whatever was in memory before. Give them a value first, e.g. 'int x = 0;'."
         self.warn("uninitialized", f"using {what}, which was never given a value - it contains leftover garbage", node, hint=hint, addrs=[(addr, size)])
 
+    def note_read(self, addr: int, size: int) -> None:
+        if size > 0:
+            self.reads.append((addr, size))
+
     def load(self, addr: int, ty: T.CType, prov, node):
         size = ty.size
         r = self.access(addr, size, prov, False, node)
+        self.reads.append((addr, size))
         off = addr - r.base
         end = off + size
         cls = ty.__class__
@@ -850,6 +858,8 @@ class VM:
                 names.append(self.objects[oid].name)
         if not quiet:
             self.check_frame_slots(rec)
+            # Returning reads the saved frame pointer and the return address.
+            self.note_read(self.objects[rec.fp_obj].addr, 16)
         self.kill(rec.ret_obj, "return")
         self.kill(rec.fp_obj, "return")
         rec.death = len(self.steps)

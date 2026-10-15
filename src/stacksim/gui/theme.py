@@ -34,6 +34,8 @@ class Theme:
     uninit_text: QColor
     changed_fill: QColor
     changed_border: QColor
+    read_fill: QColor
+    read_border: QColor
     problem_fill: QColor
     problem_border: QColor
     arrow: QColor
@@ -72,6 +74,7 @@ LIGHT = Theme(
     box_fill=_c("#ffffff"), box_border=_c("#b4bac4"),
     uninit_fill=_c("#f1f1f1"), uninit_text=_c("#9aa0a6"),
     changed_fill=_c("#fff1a8"), changed_border=_c("#e0a800"),
+    read_fill=_c("#dcebff"), read_border=_c("#5b8fd6"),
     problem_fill=_c("#fde7e5"), problem_border=_c("#d93025"),
     arrow=_c("#1f6fd1"), arrow_bad=_c("#d93025"), null_text=_c("#9aa0a6"),
     next_line=_c("#d4f5d4"), prev_line=_c("#eeeeee"), error_line=_c("#fbd3cf"), warning_line=_c("#fff0c2"),
@@ -92,6 +95,7 @@ DARK = Theme(
     box_fill=_c("#2b2d31"), box_border=_c("#555a63"),
     uninit_fill=_c("#26272a"), uninit_text=_c("#7c8087"),
     changed_fill=_c("#5a4c10"), changed_border=_c("#e3b341"),
+    read_fill=_c("#1e3554"), read_border=_c("#6ea8fe"),
     problem_fill=_c("#4a1f1d"), problem_border=_c("#f28b82"),
     arrow=_c("#8ab4f8"), arrow_bad=_c("#f28b82"), null_text=_c("#80868b"),
     next_line=_c("#1f3d24"), prev_line=_c("#2c2d30"), error_line=_c("#4a1f1d"), warning_line=_c("#3d3417"),

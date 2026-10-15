@@ -100,9 +100,9 @@ class FrameRec:
 
 
 class Step:
-    __slots__ = ("line", "kind", "frame", "delta", "events", "out_len", "stdin_pos", "diags", "sp")
+    __slots__ = ("line", "kind", "frame", "delta", "events", "out_len", "stdin_pos", "diags", "sp", "reads")
 
-    def __init__(self, line, kind, frame, delta, events, out_len, stdin_pos, diags, sp):
+    def __init__(self, line, kind, frame, delta, events, out_len, stdin_pos, diags, sp, reads=()):
         self.line = line  # the line that is about to execute (None at the end)
         self.kind = kind  # start stmt loop call return end exit error
         self.frame = frame  # id of the innermost frame (None after main returned)
@@ -112,6 +112,7 @@ class Step:
         self.stdin_pos = stdin_pos
         self.diags = diags  # indices into Trace.diagnostics raised since the previous step
         self.sp = sp
+        self.reads = reads  # (addr, size) of the memory read since the previous step
 
 
 @dataclass

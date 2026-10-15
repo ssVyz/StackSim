@@ -99,6 +99,8 @@ class _Layout:
             fill, border, color = t.freed_fill, t.freed_border, t.text_dim
         if not cell.init:
             fill, color = t.uninit_fill, t.uninit_text
+        if cell.read and not cell.changed:
+            fill, border = t.read_fill, t.read_border
         if cell.changed:
             fill, border = t.changed_fill, t.changed_border
         width = 1.0
@@ -625,6 +627,7 @@ class _Layout:
         c = self.c
         items = [
             (t.changed_fill, t.changed_border, "changed in this step"),
+            (t.read_fill, t.read_border, "read in this step"),
             (t.uninit_fill, t.box_border, "? = never given a value (garbage)"),
             (t.problem_fill, t.problem_border, "problem in this step"),
             (t.leak_fill, t.leak_border, "leaked heap block"),

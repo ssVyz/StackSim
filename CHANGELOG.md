@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7] - 2026-10-15
+
+### Added
+
+- Values that a step reads are marked light blue in the memory view (with a legend entry and a tooltip note), next to the yellow marking for values it changes. This covers variables, struct members, array elements and heap memory, reads by library functions (e.g. the source of `memcpy`, strings read by `strlen` or `printf("%s")`), and the return address and saved frame pointer when a function returns. A value that is read and changed in the same step is shown as changed.
+- The trace records the memory read in each step (`Step.reads`); tests for read marking.
+
 ## [0.0.6] - 2026-10-15
 
 ### Fixed

@@ -75,6 +75,7 @@ def read_cstring(vm, p, node, func: str, limit: int | None = None) -> bytes:
     if 0 in r.init[off:end_init]:
         bad = off + r.init[off:end_init].index(0)
         vm.uninit_read(r.base + bad, 1, p.prov if o is not None and o.addr <= r.base + bad < o.addr + o.size else None, node)
+    vm.note_read(addr, min(k + 1, len(data)) - off)
     return bytes(data[off:k])
 
 
@@ -97,6 +98,7 @@ def read_bytes(vm, p, n: int, node, func: str) -> tuple[bytes, bytes]:
     else:
         r = vm.access(addr, n, p.prov, False, node)
     off = addr - r.base
+    vm.note_read(addr, n)
     return bytes(r.data[off : off + n]), bytes(r.init[off : off + n])
 
 

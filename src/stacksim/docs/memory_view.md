@@ -96,6 +96,7 @@ values of that type; before that it is shown as raw bytes.
 | What you see | Meaning |
 |---|---|
 | yellow cell | this value changed in the step that just ran |
+| light blue cell | this value was read (but not changed) in the step that just ran - including reads by library functions like `memcpy` or `printf("%s")`, and the return address when a function returns |
 | grey cell with `?` | this memory was never given a value - it contains garbage (hover to see it) |
 | red outline | memory involved in a problem in this step |
 | blue dot with an arrow | a pointer, and what it points to |

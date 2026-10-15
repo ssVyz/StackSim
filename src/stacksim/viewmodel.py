@@ -36,6 +36,7 @@ class Cell:
     target_status: str = ""  # ok dangling wild null uninit fn end
     target_size: int = 1  # size of the pointed-to type (to pick the best arrow target)
     always_text: bool = False  # show the pointer value even when addresses are switched off
+    read: bool = False  # the program read this value in the step that just ran
     tooltip: str = ""
     raw: bytes = b""
     problem: bool = False
@@ -266,6 +267,7 @@ class ViewBuilder:
         st = tr.steps[step]
         self.step = step
         self.changed = [(e[0], len(e[3])) for e in st.delta if len(e) == 5]
+        self.read_ranges = list(st.reads)
         diags = [tr.diagnostics[i] for i in st.diags]
         self.problem_ranges = [r for d in diags for r in d.addrs]
 
@@ -478,6 +480,7 @@ class ViewBuilder:
                 _overlaps(self.changed, ro.addr, 8), "", tooltip=tip, raw=data,
                 problem=_overlaps(self.problem_ranges, ro.addr, 8) or not intact,
             )
+            cell.read = _overlaps(self.read_ranges, ro.addr, 8)
             out.append(FrameSlot("retaddr", cell, desc, site[1] if site and intact else None, intact))
         fo = tr.objects[fr.fp_obj]
         got = self.mem.peek(fo.addr, 8)
@@ -507,6 +510,7 @@ class ViewBuilder:
                 _overlaps(self.changed, fo.addr, 8), "", target=target, target_status=status, target_size=8,
                 tooltip=tip, raw=data, problem=_overlaps(self.problem_ranges, fo.addr, 8) or not intact, always_text=True,
             )
+            cell.read = _overlaps(self.read_ranges, fo.addr, 8)
             out.append(FrameSlot("savedfp", cell, desc, None, intact))
         return out
 
@@ -667,6 +671,13 @@ class ViewBuilder:
         return data[:k].decode("utf-8", "replace")
 
     def scalar(self, ty: T.CType, addr: int, label: str, raw_byte: bool = False) -> Cell:
+        cell = self._scalar(ty, addr, label, raw_byte)
+        if _overlaps(self.read_ranges, addr, ty.size):
+            cell.read = True
+            cell.tooltip += "\n(read in the step that just ran)"
+        return cell
+
+    def _scalar(self, ty: T.CType, addr: int, label: str, raw_byte: bool = False) -> Cell:
         size = ty.size
         got = self.mem.peek(addr, size)
         changed = _overlaps(self.changed, addr, size)
