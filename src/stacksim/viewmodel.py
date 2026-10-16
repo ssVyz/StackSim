@@ -106,6 +106,7 @@ class FrameView:
     base: int = 0
     ghost: bool = False  # leftovers below the stack pointer
     ghost_scope: bool = False  # ...of ended blocks of a function that is still running
+    title: str | None = None  # a card that is not a function's frame (command-line arguments)
 
 
 @dataclass
@@ -148,6 +149,7 @@ class MemoryState:
     show_ghosts: bool = False
     ghost_frames: list[FrameView] = field(default_factory=list)  # leftovers of returned functions
     ghost_notes: list[str] = field(default_factory=list)  # explanations about leftover values
+    args_frame: FrameView | None = None  # argv strings and array at the top of the stack
 
 
 def _overlaps(ranges: list[tuple[int, int]], addr: int, size: int) -> bool:
@@ -279,6 +281,13 @@ class ViewBuilder:
         frames, hidden = self.build_frames(step)
         ghost_frames = self.build_ghost_frames(step) if show_ghosts else []
         statics = self.build_statics(alive)
+        arg_objs = sorted((o for o in alive if o.kind == "arg"), key=lambda o: -o.addr)
+        args_frame = None
+        if arg_objs:
+            args_frame = FrameView(
+                id=-1, func="", line=None, vars=[self.var_view(o) for o in arg_objs], is_top=False, ret_text=None,
+                title=f"Command-line arguments (argc = {len(tr.args)})",
+            )
         heap_live = [o for o in alive if o.kind == "heap"]
         reachable = self.reachable(alive, heap_live)
         blocks = self.build_blocks(step, heap_live, reachable, show_freed)
@@ -324,6 +333,7 @@ class ViewBuilder:
             show_ghosts=show_ghosts,
             ghost_frames=ghost_frames,
             ghost_notes=self.ghost_notes(step) if show_ghosts else [],
+            args_frame=args_frame,
         )
 
     # ------------------------------------------------------------- pieces
@@ -807,7 +817,7 @@ class ViewBuilder:
                             work.append(o)
 
         for o in alive:
-            if o.kind in ("local", "param", "global", "static", "builtin"):
+            if o.kind in ("local", "param", "global", "static", "builtin", "arg"):
                 scan(o.addr, o.size)
         # A function that is returning still "holds" its return value.
         st = self.trace.steps[self.step]

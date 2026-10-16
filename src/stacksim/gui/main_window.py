@@ -8,9 +8,8 @@ import traceback
 from importlib import resources
 
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -18,11 +17,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QScrollArea,
     QSplitter,
     QStyle,
@@ -44,11 +41,11 @@ from ..vm.trace import Trace
 from .canvas import MemoryCanvas
 from .editor import CodeEditor
 from .examples import DEFAULT_PROGRAM, EXAMPLES, NEW_FILE
+from .inputs import ArgsDialog, InputDialog, InputPanel
 from .theme import current_theme, mono_font
 from .timeline import Timeline
 
 SPEEDS = [
-    ("Step by step (manual)", 0.0),
     ("Very slow (1 step/s)", 1.0),
     ("Slow (2 steps/s)", 2.0),
     ("Normal (4 steps/s)", 4.0),
@@ -56,7 +53,7 @@ SPEEDS = [
     ("Very fast (30 steps/s)", 30.0),
     ("Instant (jump to the end)", -1.0),
 ]
-DEFAULT_SPEED = 3
+DEFAULT_SPEED = 2  # Normal
 
 STEP_KIND_TEXT = {
     "start": "the program starts",
@@ -75,53 +72,18 @@ class _Bridge(QObject):
     input_needed = Signal(object, object)  # request dict, reply box (see MainWindow.input_provider)
 
 
-class InputDialog(QDialog):
-    """Asks for one line of keyboard input while a program is being run."""
-
-    def __init__(self, parent, req: dict):
-        super().__init__(parent)
-        self.setWindowTitle("Input needed")
-        self.result_kind = "stop"
-        lay = QVBoxLayout(self)
-        where = f"Line {req['line']}: " if req.get("line") else ""
-        text = f"<p>{where}<code>{html.escape(req.get('call') or '')}</code> is waiting for keyboard input.</p>"
-        if req.get("output"):
-            text += f"<p>The program has printed:<br><code>{html.escape(req['output'])}</code></p>"
-        fmt = req.get("format")
-        if fmt and fmt != fmt.rstrip():
-            text += (
-                "<p><i>Note: the format string ends with whitespace, so scanf keeps reading until it sees "
-                "something that is not a space or a new line. Remove the whitespace at the end of the format.</i></p>"
-            )
-        label = QLabel(text)
-        label.setWordWrap(True)
-        lay.addWidget(label)
-        self.edit = QLineEdit()
-        self.edit.setFont(mono_font(11))
-        self.edit.setPlaceholderText("Type one line, then press Enter")
-        lay.addWidget(self.edit)
-        note = QLabel(
-            "Your input is saved in the <b>Input (stdin)</b> tab and used again in the next runs. "
-            "Press <b>Clear input</b> there to be asked again."
-        )
-        note.setWordWrap(True)
-        lay.addWidget(note)
-        bb = QDialogButtonBox()
-        ok = bb.addButton("OK", QDialogButtonBox.ButtonRole.AcceptRole)
-        eof = bb.addButton("End of input (EOF)", QDialogButtonBox.ButtonRole.ActionRole)
-        stop = bb.addButton("Stop program", QDialogButtonBox.ButtonRole.RejectRole)
-        ok.setDefault(True)
-        ok.clicked.connect(lambda: self._done("line"))
-        eof.clicked.connect(lambda: self._done("eof"))
-        stop.clicked.connect(lambda: self._done("stop"))
-        eof.setToolTip("Tell the program that there is no more input (like Ctrl+D / Ctrl+Z in a terminal).")
-        lay.addWidget(bb)
-        self.edit.returnPressed.connect(lambda: self._done("line"))
-        self.resize(480, self.sizeHint().height())
-
-    def _done(self, kind: str) -> None:
-        self.result_kind = kind
-        self.accept()
+def _record_icon(size: int = 32) -> QIcon:
+    """A red dot: Execute records a run."""
+    pm = QPixmap(size, size)
+    pm.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QColor("#a51d17"))
+    p.setBrush(QColor("#d93025"))
+    m = size * 0.2
+    p.drawEllipse(int(m), int(m), int(size - 2 * m), int(size - 2 * m))
+    p.end()
+    return QIcon(pm)
 
 
 class MainWindow(QMainWindow):
@@ -181,33 +143,12 @@ class MainWindow(QMainWindow):
         self.output.setReadOnly(True)
         self.output.setFont(mono_font(10))
         self.output.setPlaceholderText("What the program prints appears here.")
-        self.stdin_edit = QPlainTextEdit()
-        self.stdin_edit.setFont(mono_font(10))
-        self.stdin_edit.setPlaceholderText("Type the input for scanf / getchar / fgets here before pressing Run.")
-        self.stdin_edit.textChanged.connect(self.on_code_changed)
-        stdin_box = QWidget()
-        sl = QVBoxLayout(stdin_box)
-        sl.setContentsMargins(4, 4, 4, 4)
-        hint = QLabel(
-            "The program reads this text as its keyboard input (stdin); text it has already read is greyed out. "
-            "When the program needs more, you are asked while it runs, and your answers are added here."
-        )
-        hint.setWordWrap(True)
-        sl.addWidget(hint)
-        sl.addWidget(self.stdin_edit)
-        row = QHBoxLayout()
-        self.stdin_eof = QCheckBox("Input ends here (EOF)")
-        self.stdin_eof.setToolTip(
-            "Checked: after this text the program gets 'end of input' (EOF) instead of asking you for more."
-        )
-        self.stdin_eof.toggled.connect(lambda _: self.on_code_changed())
-        clear = QPushButton("Clear input")
-        clear.setToolTip("Delete the saved input, so that you are asked again in the next run")
-        clear.clicked.connect(self.clear_input)
-        row.addWidget(self.stdin_eof)
-        row.addStretch(1)
-        row.addWidget(clear)
-        sl.addLayout(row)
+        self.inputs = InputPanel()
+        self.inputs.changed.connect(self.on_code_changed)
+        self.inputs.resetRequested.connect(self.reset_inputs)
+        self.inputs.editRequested.connect(self.unlock_inputs)
+        self.stdin_edit = self.inputs.stdin_edit
+        self.stdin_eof = self.inputs.stdin_eof
         self.problems = QTreeWidget()
         self.problems.setHeaderLabels(["", "Line", "Step", "Problem"])
         self.problems.setRootIsDecorated(False)
@@ -218,7 +159,7 @@ class MainWindow(QMainWindow):
         self.problems.itemClicked.connect(self.on_problem_clicked)
         self.tabs = QTabWidget()
         self.tabs.addTab(self.output, "Output")
-        self.tabs.addTab(stdin_box, "Input (stdin)")
+        self.tabs.addTab(self.inputs, "Input")
         self.tabs.addTab(self.problems, "Problems")
 
         self.left_split = QSplitter(Qt.Orientation.Vertical)
@@ -269,7 +210,7 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.main_split, 1)
         cl.addWidget(bar)
         self.setCentralWidget(central)
-        self.statusBar().showMessage("Ready. Press F5 to run the program.")
+        self.statusBar().showMessage("Ready. Press Execute (F5) to run the program and record it.")
         self.show_intro()
 
     def build_actions(self) -> None:
@@ -289,15 +230,20 @@ class MainWindow(QMainWindow):
             return a
 
         S = QStyle.StandardPixmap
-        self.act_run = act("Run", self.run, "F5", S.SP_MediaPlay, "Compile and run the program, recording every step")
-        self.act_stop = act("Stop", self.stop_run, "Shift+F5", S.SP_MediaStop, "Stop the playback (or a run that takes too long)")
+        self.act_execute = act(
+            "Execute", self.execute, "F5", None,
+            "Compile the program, run it with its inputs and record every step (asks for missing input)",
+        )
+        self.act_execute.setIcon(_record_icon())
+        self.act_run = self.act_execute
+        self.act_stop = act("Stop", self.stop_run, "Shift+F5", S.SP_MediaStop, "Stop the playback (or an execution that takes too long)")
         self.act_stop.setShortcuts([QKeySequence("Shift+F5"), QKeySequence("Esc")])
-        self.act_stop.setToolTip("Stop the playback (or a run that takes too long)  (Esc or Shift+F5)")
+        self.act_stop.setToolTip("Stop the playback (or an execution that takes too long)  (Esc or Shift+F5)")
         self.act_first = act("First step", lambda: self.goto(0, pause=True), "Alt+Home", S.SP_MediaSkipBackward, "Go to the first step")
         self.act_back_over = act("Back over", self.step_back_over, "Shift+F11", None, "Go back to the previous line of the current function (skipping over calls)")
         self.act_back = act("Back", self.step_back, "Shift+F10", S.SP_ArrowBack, "Go one step back")
         self.act_play_back = act("Play backwards", lambda: self.toggle_play(-1), "Shift+F6", S.SP_MediaSeekBackward, "Play backwards")
-        self.act_play = act("Play", lambda: self.toggle_play(1), "F6", S.SP_MediaPlay, "Play / pause")
+        self.act_play = act("Play", lambda: self.toggle_play(1), "F6", S.SP_MediaPlay, "Play the executed run / pause")
         self.act_step = act("Step", self.step_forward, "F10", S.SP_ArrowForward, "Go one step forward")
         self.act_step_over = act("Step over", self.step_over, "F11", None, "Go to the next line of the current function (skipping over calls)")
         self.act_last = act("Last step", lambda: self.goto(self.last_step(), pause=True), "Alt+End", S.SP_MediaSkipForward, "Go to the last step")
@@ -307,7 +253,7 @@ class MainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         tb.setMovable(False)
         self.addToolBar(tb)
-        tb.addAction(self.act_run)
+        tb.addAction(self.act_execute)
         tb.addAction(self.act_stop)
         tb.addSeparator()
         for a in (self.act_first, self.act_back_over, self.act_back, self.act_play_back, self.act_play, self.act_step, self.act_step_over, self.act_last):
@@ -342,7 +288,7 @@ class MainWindow(QMainWindow):
             sub.addAction(act(ex.title, lambda checked=False, e=ex: self.load_example(e)))
 
         rm = mb.addMenu("&Run")
-        for a in (self.act_run, self.act_stop):
+        for a in (self.act_execute, self.act_stop):
             rm.addAction(a)
         rm.addSeparator()
         for a in (self.act_play, self.act_play_back, self.act_step, self.act_back, self.act_step_over, self.act_back_over, self.act_first, self.act_last):
@@ -352,7 +298,7 @@ class MainWindow(QMainWindow):
         rm.addAction(act("Clear all breakpoints", self.clear_breakpoints))
         rm.addAction(act("Step limit...", self.ask_step_limit))
         rm.addAction(act("Frame limit...", self.ask_frame_limit))
-        rm.addAction(act("Clear saved input", self.clear_input))
+        rm.addAction(act("Reset inputs", self.reset_inputs))
 
         vm = mb.addMenu("&View")
         self.act_addr = act("Show addresses", lambda c: self.set_canvas_option("show_addresses", c), checkable=True)
@@ -407,8 +353,16 @@ class MainWindow(QMainWindow):
         self.editor.setPlainText(src if isinstance(src, str) and src.strip() else DEFAULT_PROGRAM)
         self.stdin_edit.setPlainText(s.value("stdin", "") or "")
         self.stdin_eof.setChecked(s.value("stdin_eof", False) in (True, "true"))
+        args = s.value("args", [])
+        if isinstance(args, str):
+            args = [args] if args else []
+        self.inputs.set_args(list(args or []), s.value("args_confirmed", False) in (True, "true"))
+        self.inputs.set_locked(s.value("inputs_locked", False) in (True, "true"))
         self.file_path = s.value("file_path") or None
-        self.speed.setCurrentIndex(int(s.value("speed", DEFAULT_SPEED)))
+        self.inputs.set_prog_name(self.prog_name())
+        names = [n for n, _ in SPEEDS]
+        speed_name = s.value("speed_name", names[DEFAULT_SPEED])
+        self.speed.setCurrentIndex(names.index(speed_name) if speed_name in names else DEFAULT_SPEED)
 
         def flag(name, default):
             v = s.value(name, default)
@@ -436,8 +390,11 @@ class MainWindow(QMainWindow):
         s.setValue("source", self.editor.toPlainText())
         s.setValue("stdin", self.stdin_edit.toPlainText())
         s.setValue("stdin_eof", self.stdin_eof.isChecked())
+        s.setValue("args", self.inputs.args())
+        s.setValue("args_confirmed", self.inputs.args_confirmed)
+        s.setValue("inputs_locked", self.inputs.locked)
         s.setValue("file_path", self.file_path or "")
-        s.setValue("speed", self.speed.currentIndex())
+        s.setValue("speed_name", self.speed.currentText())
         s.setValue("show_addresses", self.act_addr.isChecked())
         s.setValue("show_bytes", self.act_bytes.isChecked())
         s.setValue("show_freed", self.act_freed.isChecked())
@@ -482,13 +439,25 @@ class MainWindow(QMainWindow):
             return r == QMessageBox.StandardButton.Discard
         return True
 
+    def prog_name(self) -> str:
+        """argv[0]: './' plus the file name without .c, or './prog'."""
+        if not self.file_path:
+            return "./prog"
+        name = self.file_path.replace("\\", "/").rsplit("/", 1)[-1]
+        if name.lower().endswith(".c"):
+            name = name[:-2]
+        return "./" + (name or "prog")
+
     def set_source(self, text: str, stdin: str = "", path: str | None = None) -> None:
+        """Show a new program. Its inputs start empty (or with the example's prepared input)."""
         self.pause()
         self.editor.setPlainText(text)
+        self.inputs.reset()
         self.stdin_edit.setPlainText(stdin)
         self.file_path = path
+        self.inputs.set_prog_name(self.prog_name())
         self.editor.document().setModified(False)
-        self.clear_run("Press Run (F5) to start the program.\nThe stack and the heap will appear here.")
+        self.clear_run("Press Execute (F5) to run the program and record it.\nThe stack and the heap will appear here.")
         self.update_title()
 
     def new_file(self) -> None:
@@ -498,7 +467,7 @@ class MainWindow(QMainWindow):
     def load_example(self, ex) -> None:
         if self.confirm_discard():
             self.set_source(ex.code, ex.stdin)
-            self.statusBar().showMessage(f"Loaded example: {ex.title}. Press F5 to run it.")
+            self.statusBar().showMessage(f"Loaded example: {ex.title}. Press Execute (F5) to run it.")
 
     def open_file_dialog(self) -> None:
         if not self.confirm_discard():
@@ -514,7 +483,7 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "Open failed", str(e))
             return
-        self.set_source(text, self.stdin_edit.toPlainText(), path)
+        self.set_source(text, "", path)
 
     def save_file(self) -> bool:
         if not self.file_path:
@@ -535,39 +504,98 @@ class MainWindow(QMainWindow):
         if not path:
             return False
         self.file_path = path
+        self.inputs.set_prog_name(self.prog_name())
         return self.save_file()
 
     # ================================================================= run
 
-    def run(self) -> None:
+    def execute(self) -> None:
+        """Compile the program, settle its inputs, then run it in the background and record it."""
         if self.running:
             return
         self.pause()
         src = self.editor.toPlainText()
-        stdin = self.stdin_edit.toPlainText().encode("utf-8")
         result = compile_source(src)
         self.compile_result = result
         if not result.ok:
             self.show_compile_errors(result)
             return
+        prog = result.program
+        takes_args, reads = prog.takes_args, prog.reads_stdin
+        # Inputs that belong to the last execution: keep them, or start over?
+        if self.inputs.locked and (takes_args or reads) and self.inputs.has_saved(takes_args, reads):
+            choice = self.ask_reuse_inputs(self.inputs.summary(takes_args, reads))
+            if choice == "cancel":
+                self.statusBar().showMessage("Execution cancelled.", 4000)
+                return
+            if choice == "reset":
+                self.inputs.reset()
+        if takes_args and not self.inputs.args_confirmed:
+            args = self.ask_args(self.prog_name(), self.inputs.args())
+            if args is None:
+                self.statusBar().showMessage("Execution cancelled.", 4000)
+                return
+            self.inputs.set_args(args, confirmed=True)
+        self.inputs.set_locked(True)
+        stdin = self.stdin_edit.toPlainText().encode("utf-8")
+        args = self.inputs.args()
         self.running = True
         self.cancel = threading.Event()
         self.update_controls()
-        self.statusBar().showMessage("Running... (the whole run is recorded, then you can move through it)")
+        self.statusBar().showMessage("Executing... (the whole run is recorded; then you can play it)")
         cancel = self.cancel
         max_steps = self.max_steps
         max_frames = self.max_frames
         provider = self.make_input_provider(cancel)
         eof = self.stdin_eof.isChecked()
+        name = self.prog_name()
 
         def work():
             try:
-                trace = execute(result.program, stdin, max_steps, cancel, src, max_frames, provider, eof)
+                trace = execute(result.program, stdin, max_steps, cancel, src, max_frames, provider, eof, args, name)
                 self.bridge.finished.emit(result, trace, None)
             except Exception:  # pragma: no cover - internal errors are shown to the user
                 self.bridge.finished.emit(result, None, traceback.format_exc())
 
         threading.Thread(target=work, name="stacksim-run", daemon=True).start()
+
+    run = execute  # older name
+
+    def ask_reuse_inputs(self, summary: str) -> str:
+        """Ask whether to execute again with the same inputs. Returns "keep", "reset" or "cancel"."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Execute again")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("This program uses input. The last execution used these inputs:")
+        box.setInformativeText(summary + "\n\nExecute again with the same inputs?")
+        keep = box.addButton("Use the same inputs", QMessageBox.ButtonRole.AcceptRole)
+        reset = box.addButton("Reset and enter new inputs", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(keep)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is keep:
+            return "keep"
+        if clicked is reset:
+            return "reset"
+        return "cancel"
+
+    def ask_args(self, prog_name: str, current: list[str]) -> list[str] | None:
+        """Ask for the command-line arguments. Returns the list, or None if cancelled."""
+        dlg = ArgsDialog(self, prog_name, current)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dlg.result_args()
+
+    def reset_inputs(self) -> None:
+        self.inputs.reset()
+        self.statusBar().showMessage("Inputs reset - the next Execute asks for them again.", 5000)
+
+    clear_input = reset_inputs  # older name
+
+    def unlock_inputs(self) -> None:
+        self.inputs.set_locked(False)
+        self.statusBar().showMessage("Inputs unlocked. After changing them, press Execute (F5) to record a new run.", 5000)
 
     # ---------------------------------------------------------------- input
 
@@ -637,19 +665,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Internal error.")
             return
         self.load_trace(result, trace)
-        speed = SPEEDS[self.speed.currentIndex()][1]
-        if speed < 0:
-            self.goto(self.find_stop(0, 1))
-        else:
-            self.goto(0)
-            if speed > 0:
-                self.toggle_play(1)
+        self.inputs.set_locked(True)
+        self.goto(0)
         end = {"exit": "finished", "error": "crashed", "limit": "was stopped (step limit)", "cancelled": "was stopped"}[trace.end_reason]
         nwarn = sum(1 for d in trace.diagnostics if d.severity == "warning") + sum(1 for d in result.diagnostics if d.severity == "warning")
         self.statusBar().showMessage(
-            f"The program {end} after {len(trace.steps)} steps"
+            f"Executed: the program {end} after {len(trace.steps)} steps"
             + (f" - {nwarn} problem{'s' if nwarn != 1 else ''} found (see the Problems tab)" if nwarn else "")
-            + ". Use the playback buttons or the timeline to move through it."
+            + ". Press Play (F6) or Step (F10) to go through the run."
         )
 
     def show_compile_errors(self, result: CompileResult) -> None:
@@ -658,7 +681,7 @@ class MainWindow(QMainWindow):
         self.state = None
         self.stale = False
         self.canvas.stale = False
-        self.canvas.placeholder = "The program could not be compiled.\nFix the error shown in the Problems tab and press Run again."
+        self.canvas.placeholder = "The program could not be compiled.\nFix the error shown in the Problems tab and press Execute again."
         self.canvas.set_state(None)
         self.timeline.set_trace(0, [], [])
         self.step_label.setText("compile error")
@@ -679,7 +702,7 @@ class MainWindow(QMainWindow):
             f"<h3 style='color:{self.theme.out_stderr.name()}'>The program could not be compiled</h3>"
             f"<p><b>Line {err.line or '?'}:</b> {html.escape(err.message)}</p>"
             + (f"<p><i>Hint: {html.escape(err.hint)}</i></p>" if err.hint else "")
-            + "<p>Before C code can run, it is checked and translated. Fix the problem and press <b>Run</b> again.</p>"
+            + "<p>Before C code can run, it is checked and translated. Fix the problem and press <b>Execute</b> again.</p>"
         )
         self.tabs.setCurrentIndex(2)
         if err.line:
@@ -732,8 +755,8 @@ class MainWindow(QMainWindow):
             self.canvas.update()
             self.editor.set_exec_lines(None, None)
             self.explain.setHtml(
-                "<h3>The code or input has changed</h3><p>The memory picture belongs to the previous version. "
-                "Press <b>Run</b> (F5) to run the new version.</p>"
+                "<h3>The code or the inputs have changed</h3><p>The recorded run belongs to the previous version, "
+                "so it cannot be played any more. Press <b>Execute</b> (F5) to record a new run.</p>"
             )
             self.update_controls()
 
@@ -823,8 +846,6 @@ class MainWindow(QMainWindow):
         if speed < 0:
             self.goto(self.find_stop(self.pos, direction))
             return
-        if speed == 0:
-            speed = 4.0
         if direction > 0 and self.pos >= self.last_step():
             self.goto(0)
         if direction < 0 and self.pos <= 0:
@@ -1118,8 +1139,8 @@ class MainWindow(QMainWindow):
     def show_intro(self) -> None:
         self.explain.setHtml(
             "<h3>Welcome to stacksim</h3>"
-            "<p>Write a C program on the left (or pick one from the <b>Examples</b> menu) and press <b>Run</b> (F5). "
-            "Every step of the program is recorded. Then move through the recording with <b>Play</b>, "
+            "<p>Write a C program on the left (or pick one from the <b>Examples</b> menu) and press <b>Execute</b> (F5). "
+            "The program runs with its inputs and every step is recorded. Then go through the recording with <b>Play</b> (F6), "
             "<b>Step</b> (F10), <b>Back</b> (Shift+F10) or the timeline, and watch the <b>stack</b> and the <b>heap</b> change.</p>"
         )
 
@@ -1145,7 +1166,7 @@ class MainWindow(QMainWindow):
 
     def show_shortcuts(self) -> None:
         rows = [
-            ("F5", "Run (compile, run and record)"), ("Shift+F5 or Esc", "Stop: pause the playback, or stop a long run"),
+            ("F5", "Execute (compile, run with the inputs and record)"), ("Shift+F5 or Esc", "Stop: pause the playback, or stop a long execution"),
             ("F6", "Play / pause"), ("Shift+F6", "Play backwards"),
             ("F10", "One step forward"), ("Shift+F10", "One step back"),
             ("F11", "Step over (stay in the current function)"), ("Shift+F11", "Step back over"),

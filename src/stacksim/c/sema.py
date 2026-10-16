@@ -50,10 +50,17 @@ class Program:
     main: A.FuncDef
     headers: list[str]
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    reads_stdin: bool = False  # the program calls scanf, getchar, fgets, ...
+
+    @property
+    def takes_args(self) -> bool:
+        """main() is declared with (int argc, char *argv[])."""
+        return len(self.main.params) == 2
 
 
 PRINTF_FMT_INDEX = {"printf": 0, "fprintf": 1, "sprintf": 1, "snprintf": 2}
 SCANF_FMT_INDEX = {"scanf": 0, "sscanf": 1}
+INPUT_FUNCTIONS = frozenset({"scanf", "getchar", "fgets", "fgetc", "getc"})
 _FMT_RE = re.compile(r"%([-+ #0]*)(\*|\d+)?(?:\.(\*|\d*))?(hh|h|ll|l|z|j|t|L)?([a-zA-Z%\[])?")
 
 
@@ -96,6 +103,7 @@ class Sema:
         self.func: A.FuncDef | None = None
         self.loop_depth = 0
         self.switch_depth = 0
+        self.reads_stdin = False
 
     # ----------------------------------------------------------- utilities
 
@@ -196,6 +204,7 @@ class Sema:
             main=main,
             headers=self.headers,
             diagnostics=self.diags,
+            reads_stdin=self.reads_stdin,
         )
 
     def check_main(self, main: A.FuncDef) -> None:
@@ -1222,6 +1231,8 @@ class Sema:
         e.args = args
         e.ty = ft.ret
         if fsym is not None and fsym.builtin:
+            if fsym.name in INPUT_FUNCTIONS:
+                self.reads_stdin = True
             if fsym.name in PRINTF_FMT_INDEX:
                 self.check_format(e, PRINTF_FMT_INDEX[fsym.name], scanf=False)
             elif fsym.name in SCANF_FMT_INDEX:

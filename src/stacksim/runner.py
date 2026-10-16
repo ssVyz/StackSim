@@ -17,13 +17,15 @@ def run_source(
     max_frames: int = DEFAULT_MAX_FRAMES,
     input_provider=None,
     stdin_eof: bool = False,
+    args: list[str] | None = None,
+    prog_name: str = "./prog",
 ) -> tuple[CompileResult, Trace | None]:
     if isinstance(stdin, str):
         stdin = stdin.encode("utf-8")
     result = compile_source(source)
     if not result.ok:
         return result, None
-    trace = execute(result.program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof)
+    trace = execute(result.program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof, args, prog_name)
     return result, trace
 
 

@@ -1,8 +1,8 @@
 # StackSim
 
 **StackSim** is a teaching tool for people who are new to C or to manual memory
-management. You write a small C program, press **Run**, and stacksim executes it
-in a simulated computer, recording every step. You can then play the program
+management. You write a small C program, press **Execute**, and stacksim runs it
+in a simulated computer with the inputs you give it, recording every step. You can then play the program
 forwards and backwards, in slow motion or line by line, and watch what happens
 in memory:
 
@@ -40,14 +40,14 @@ stack overflow.
 
 | | |
 |---|---|
-| **Run** (F5) | compile, run and record the program |
-| **Play / Pause** (F6), **Play backwards** (Shift+F6) | play at the speed chosen in the toolbar, from *very slow* to *instant* |
-| **Stop** (Esc) | pause the playback (or cancel a run that takes too long) |
+| **Execute** (F5) | compile the program, run it with its inputs and record every step; asks for missing inputs |
+| **Play / Pause** (F6), **Play backwards** (Shift+F6) | play the executed run at the speed chosen in the toolbar, from *very slow* to *instant*; unavailable once the code or the inputs change |
+| **Stop** (Esc) | pause the playback (or cancel an execution that takes too long) |
 | **Step** (F10), **Back** (Shift+F10) | one step forward or back |
 | **Step over** (F11), **Back over** (Shift+F11) | the next or previous line of the current function, skipping over calls |
 | **Timeline** | drag to any point of the run; marks show where problems occurred |
 | **Breakpoints** | click in the editor margin (or press F9); playback stops there |
-| **Input (stdin)** tab | the text that `scanf`, `getchar` and `fgets` read; when it runs out, a dialog asks you for the next line and saves your answer here (*Clear input* to be asked again) |
+| **Input** tab | the command-line arguments (`argc`/`argv`) and the keyboard input (`scanf`, `getchar`, `fgets`). Execute asks for what is missing: the arguments before the program starts, keyboard input when the program reads it. After Execute the inputs are locked to that run; executing again asks whether to keep them. *Reset inputs* clears them, *Edit inputs* unlocks them |
 | **Problems** tab | every compile and run-time problem; click one to jump to its step |
 
 Inside the app, *Help > How to read the memory view* explains the picture, and

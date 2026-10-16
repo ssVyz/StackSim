@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8] - 2026-10-16
+
+### Added
+
+- Command-line arguments: programs with `int main(int argc, char *argv[])` get real arguments. They are entered in a list in the Input tab (argv[1], argv[2], ...; argv[0] is `./` plus the file name), and Execute asks for them in a dialog when they have not been set yet. Like on Linux, the argument strings and the `argv` array are placed at the top of the stack, shown as a "Command-line arguments" card above `main()`'s frame.
+- Program inputs are locked to the executed run: after Execute, the arguments and the keyboard input are read-only, so playback always shows the result for exactly these inputs. *Edit inputs* unlocks them, *Reset inputs* clears them so the next Execute asks again.
+- Executing a program that uses input again asks whether to use the same inputs or to reset them and enter new ones (or to cancel).
+- `args` and `prog_name` options for `run_source`/`execute`; `Program.reads_stdin` and `Program.takes_args`; tests for arguments and the new execute flow.
+
+### Changed
+
+- The toolbar separates **Execute** (F5, record icon) from **Play** (F6): Execute compiles, runs and records the program but no longer starts the playback; Play only works on an executed run and is unavailable once the code or the inputs change.
+- The Input tab holds both the command-line arguments and the keyboard input, with a lock bar while the inputs belong to a run; *Clear input* was replaced by *Reset inputs*.
+- The playback speed "Step by step (manual)" was removed (Execute no longer plays automatically); the chosen speed is now remembered by name.
+- Loading an example or opening a file starts with empty inputs instead of the previous program's.
+- A `char *` that points to the start of a string now points to the whole string in the picture, and arrows to small cells above or below come in vertically, so arrows cross fewer other values.
+
+### Removed
+
+- The fixed `argc = 1`, `argv = {"./prog", NULL}` in the static data area.
+
 ## [0.0.7] - 2026-10-15
 
 ### Added

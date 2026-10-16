@@ -45,6 +45,7 @@ class _Layout:
         self.fade = 0  # > 0 while drawing leftover stack values (faded cells)
         self.frame_rects: dict[int, QRectF] = {}
         self.line_links: list[tuple[QRectF, int]] = []  # hovering these highlights a source line
+        self.string_anchors: dict[int, QRectF] = {}  # char arrays: a char * to their start points at the whole string
 
     # -------------------------------------------------------------- ops
 
@@ -199,6 +200,8 @@ class _Layout:
                 h += 15
             if emit:
                 self.anchor(a.addr, a.size, QRectF(x, y + LABEL_H, w, ch))
+                if a.elem_type in ("char", "signed char", "unsigned char"):
+                    self.string_anchors[a.addr] = QRectF(x, y + LABEL_H, w, ch)
             return w, h
         # Arrays of structs/arrays: one element per line.
         label_w = max(self.fm_tiny.horizontalAdvance(e.label) for e in elems if not isinstance(e, Cell)) + 6
@@ -358,8 +361,10 @@ class _Layout:
         if slots:
             name_w = max(name_w, max(self.fm_ui_bold.horizontalAdvance(self.SLOT_LABELS[s.kind][0]) + 6 for s in slots))
         head_h = 24.0
-        title = f"{f.func}()"
-        if f.ghost:
+        title = f.title or f"{f.func}()"
+        if f.title:
+            right = "set up before main() starts"
+        elif f.ghost:
             title += " - ended block" if f.ghost_scope else " - has returned"
             right = "leftover memory"
         else:
@@ -391,7 +396,7 @@ class _Layout:
         if f.ghost:
             border, fill, head = t.freed_border, t.freed_fill, t.freed_fill
         r = QRectF(x, y, w, h)
-        if not f.ghost:
+        if not f.ghost and not f.title:
             self.frame_rects[f.id] = QRectF(r)
         self.rect(r, fill, border, 6, bw, dash=f.ghost)
         if f.ghost:
@@ -401,7 +406,13 @@ class _Layout:
         self.text(QRectF(x + INNER, y, w - 2 * INNER, head_h), title, c.f_title, t.text_dim if f.ghost else t.text, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.text(QRectF(x + INNER, y, w - 2 * INNER, head_h), right, c.f_ui, t.frame_top_border if f.is_top else t.text_dim, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         tip = f"Stack frame of {f.func}()"
-        if f.ghost and f.ghost_scope:
+        if f.title:
+            tip = (
+                "Before main() starts, the C runtime copies the command-line arguments to the top of the stack:\n"
+                "the text of each argument, and below it the argv array with one pointer per argument and a\n"
+                "NULL pointer at the end. main() receives argc (the number of entries) and argv (the array)."
+            )
+        elif f.ghost and f.ghost_scope:
             tip = (
                 f"Leftovers of variables of {f.func}() whose block has ended (for example a loop variable).\n"
                 "When the block ended, the stack pointer moved back up, so this memory is free stack space now. "
@@ -557,12 +568,16 @@ class _Layout:
         y0 += self.legend(PAD, y0)
         # ---- left column: the stack (addresses in a gutter on its left)
         x = PAD + (ADDR_W if c.show_addresses else 0)
+        args_size = self.frame_card(s.args_frame, 0, 0, None, False) if s.args_frame else (0.0, 0.0)
         frame_sizes = [self.frame_card(f, 0, 0, None, False) for f in s.frames]
         ghost_widths = [self.frame_card(g, 0, 0, None, False)[0] for g in s.ghost_frames] if s.show_ghosts else []
-        left_w = max([w for w, _ in frame_sizes] + ghost_widths + [300.0])
+        left_w = max([w for w, _ in frame_sizes] + ghost_widths + [args_size[0], 300.0])
         y = y0
         used = f"{s.stack_bytes} bytes in use" if s.frames else "empty"
         y += self.column_title(PAD, y, "Stack", f"newest call at the bottom - {used}")
+        if s.args_frame is not None:
+            self.frame_card(s.args_frame, x, y, left_w, True)
+            y += args_size[1] + 10
         if not s.frames:
             self.text(QRectF(x, y, left_w, 40), "(no function is running)", c.f_ui, t.text_dim, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             y += 40
@@ -643,6 +658,8 @@ class _Layout:
     # ------------------------------------------------------------ arrows
 
     def resolve(self, target: int, tsize: int, status: str) -> tuple[QRectF | None, bool]:
+        if tsize == 1 and target in self.string_anchors:
+            return self.string_anchors[target], False
         best = None
         for addr, size, r, depth in self.anchors:
             if addr <= target < addr + max(size, 1):
@@ -836,6 +853,17 @@ class MemoryCanvas(QWidget):
                 e = QPointF(r.left() - 1, min(max(sy, r.top() + 8), r.bottom() - 8) if r.height() > 40 else r.center().y())
                 dx = max(30.0, (e.x() - sx) / 2)
                 c1, c2 = QPointF(sx + dx, sy), QPointF(e.x() - dx, e.y())
+            elif (
+                r.width() <= 140 and r.height() <= 60 and status not in ("frame", "end")
+                and abs(r.center().y() - sy) > 30 and not (tsize == 1 and target in lay.string_anchors)
+            ):
+                # A small target (a cell) above or below: come in vertically, so the
+                # arrow does not run across the cells next to it.
+                above = r.bottom() < sy
+                e = QPointF(r.center().x(), r.bottom() + 1 if above else r.top() - 1)
+                dy = max(30.0, abs(sy - e.y()) / 2)
+                c1 = QPointF(sx + 40, sy)
+                c2 = QPointF(e.x(), e.y() + dy if above else e.y() - dy)
             else:
                 e = QPointF(r.right() + 1, r.center().y() if r.height() <= 40 else r.top() + 12)
                 xr = max(sx, e.x()) + 40 + min(160.0, abs(e.y() - sy) / 5)

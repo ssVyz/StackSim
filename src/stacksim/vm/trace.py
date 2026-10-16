@@ -135,6 +135,7 @@ class Trace:
     return_sites: dict[int, tuple[str, int | None]] = field(default_factory=dict)  # return address -> (description, line)
     runtime_return: int = 0  # where main() returns to (inside the C runtime)
     final_shadow: dict[int, int] = field(default_factory=dict)  # pointer provenance at the end
+    args: list[str] = field(default_factory=list)  # argv as given to main (argv[0] = program name)
 
     def frame_chain(self, step: int) -> list[FrameRec]:
         """Frames alive at ``step``, outermost (main) first."""

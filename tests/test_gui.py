@@ -28,8 +28,11 @@ def window(qapp, tmp_path):
 
     settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
     w = MainWindow(settings=settings)
-    # Never open the real (modal) input dialog in tests: answer "end of input" unless a test says otherwise.
+    # Never open real (modal) dialogs in tests: answer "end of input", "keep the inputs" and "no arguments"
+    # unless a test says otherwise.
     w.ask_input = lambda req: ("eof", "")
+    w.ask_reuse_inputs = lambda summary: "keep"
+    w.ask_args = lambda prog_name, current: []
     w.resize(1400, 900)
     w.show()
     qapp.processEvents()
@@ -102,7 +105,7 @@ def test_play_and_breakpoints(window, qapp):
     assert w.trace.steps[stop].line == line
     assert w.find_stop(stop, -1) == 0
 
-    w.speed.setCurrentIndex(5)  # very fast
+    w.speed.setCurrentText("Very fast (30 steps/s)")
     w.toggle_play(1)
     assert w.timer.isActive()
     w.toggle_play(1)
@@ -312,8 +315,10 @@ def test_typed_input_is_joined_on_a_new_line(window, qapp):
 def test_stop_pauses_playback(window, qapp):
     w = window
     load(w, "Linked list")
-    w.speed.setCurrentIndex(1)  # very slow: playback starts right after the run
+    w.speed.setCurrentText("Very slow (1 step/s)")
     run_and_wait(w, qapp)
+    assert not w.timer.isActive(), "Execute only records; it does not start the playback"
+    w.act_play.trigger()
     assert w.timer.isActive(), "playback started"
     assert w.act_stop.isEnabled(), "Stop is available during playback"
     assert w.act_play.text() == "Pause"
@@ -325,3 +330,134 @@ def test_stop_pauses_playback(window, qapp):
     assert w.act_play.text() == "Play"
     # Esc is a shortcut for Stop
     assert "Esc" in [s.toString() for s in w.act_stop.shortcuts()]
+
+
+ARGS_AND_INPUT = """\
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char *argv[]) {
+    int times = argc > 1 ? atoi(argv[1]) : 1;
+    int x = 0;
+    scanf("%d", &x);
+    for (int i = 0; i < times; i++) printf("%d\\n", x);
+    return 0;
+}
+"""
+
+
+def test_execute_records_and_play_is_separate(window, qapp):
+    w = window
+    load(w, "Function calls and stack frames")
+    assert not w.act_play.isEnabled(), "nothing to play before the first execution"
+    assert w.act_execute.isEnabled() and w.act_execute.text() == "Execute"
+    run_and_wait(w, qapp)
+    assert w.trace is not None and w.pos == 0
+    assert not w.timer.isActive(), "Execute does not start the playback"
+    assert w.act_play.isEnabled()
+    w.editor.insertPlainText(" ")
+    assert w.stale and not w.act_play.isEnabled(), "changing the code makes the run outdated"
+    assert w.act_execute.isEnabled()
+    w.editor.document().setModified(False)
+
+
+def test_inputs_are_asked_on_execute_and_locked(window, qapp):
+    w = window
+    w.set_source(ARGS_AND_INPUT)
+    asked_args, asked_input, asked_reuse = [], [], []
+    w.ask_args = lambda name, cur: asked_args.append((name, cur)) or ["3"]
+    w.ask_input = lambda req: asked_input.append(req) or ("line", "7")
+    w.ask_reuse_inputs = lambda summary: asked_reuse.append(summary) or "keep"
+
+    run_and_wait(w, qapp)
+    assert asked_args == [("./prog", [])]
+    assert len(asked_input) == 1 and asked_reuse == []
+    assert w.trace.args == ["./prog", "3"]
+    w.goto(w.last_step())
+    assert w.output.toPlainText().startswith("7\n7\n7\n")
+    # the inputs belong to the run now
+    assert w.inputs.locked and w.stdin_edit.isReadOnly() and w.inputs.lock_bar.isVisibleTo(w.inputs)
+    assert w.inputs.args() == ["3"]
+
+    # executing again asks whether to keep the inputs
+    run_and_wait(w, qapp)
+    assert len(asked_reuse) == 1
+    assert "Command-line arguments: 3" in asked_reuse[0] and "Keyboard input: 1 line (7)" in asked_reuse[0]
+    assert len(asked_args) == 1 and len(asked_input) == 1, "kept inputs are not asked again"
+
+    # ... or to reset them: then everything is asked again
+    w.ask_reuse_inputs = lambda summary: "reset"
+    run_and_wait(w, qapp)
+    assert len(asked_args) == 2 and len(asked_input) == 2
+
+    # cancel keeps the old run
+    before = w.trace
+    w.ask_reuse_inputs = lambda summary: "cancel"
+    w.execute()
+    assert not w.running and w.trace is before
+
+
+def test_no_input_questions_for_programs_without_input(window, qapp):
+    w = window
+    load(w, "Function calls and stack frames")
+    w.ask_reuse_inputs = lambda summary: (_ for _ in ()).throw(AssertionError("should not ask"))
+    w.ask_args = lambda name, cur: (_ for _ in ()).throw(AssertionError("should not ask"))
+    run_and_wait(w, qapp)
+    run_and_wait(w, qapp)
+    assert w.trace is not None
+
+
+def test_edit_and_reset_inputs(window, qapp):
+    w = window
+    w.set_source(ARGS_AND_INPUT)
+    w.ask_args = lambda name, cur: ["2"]
+    w.ask_input = lambda req: ("line", "5")
+    run_and_wait(w, qapp)
+    assert w.inputs.locked
+    w.unlock_inputs()
+    assert not w.inputs.locked and not w.stdin_edit.isReadOnly()
+    assert not w.stale, "unlocking alone does not change the run"
+    w.stdin_edit.setPlainText("9\n")
+    assert w.stale and not w.act_play.isEnabled(), "changed inputs make the run outdated"
+    # edited inputs are the user's choice: no reuse question, and they are used as they are
+    w.ask_reuse_inputs = lambda summary: (_ for _ in ()).throw(AssertionError("should not ask"))
+    run_and_wait(w, qapp)
+    w.goto(w.last_step())
+    assert w.output.toPlainText().startswith("9\n9\n")
+
+    w.reset_inputs()
+    assert w.inputs.args() == [] and w.stdin_edit.toPlainText() == "" and not w.inputs.args_confirmed
+    assert not w.inputs.locked
+
+
+def test_arguments_typed_in_the_panel_are_used_without_asking(window, qapp):
+    w = window
+    w.set_source(ARGS_AND_INPUT, "4\n")
+    w.inputs.args_editor.add_argument()
+    w.inputs.args_editor.table.item(1, 0).setText("2")
+    assert w.inputs.args_confirmed
+    w.ask_args = lambda name, cur: (_ for _ in ()).throw(AssertionError("should not ask"))
+    run_and_wait(w, qapp)
+    assert w.trace.args == ["./prog", "2"]
+
+
+def test_program_name_follows_the_file_name(window, qapp, tmp_path):
+    w = window
+    path = tmp_path / "hello.c"
+    path.write_text(ARGS_AND_INPUT, encoding="utf-8")
+    w.open_file(str(path))
+    assert w.prog_name() == "./hello"
+    run_and_wait(w, qapp)
+    assert w.trace.args[0] == "./hello"
+
+
+def test_inputs_are_saved_with_the_settings(window, qapp):
+    w = window
+    w.set_source(ARGS_AND_INPUT)
+    w.ask_args = lambda name, cur: ["a", "b c"]
+    w.ask_input = lambda req: ("line", "1")
+    run_and_wait(w, qapp)
+    w.save_settings()
+    s = w.settings
+    assert list(s.value("args")) == ["a", "b c"]
+    assert s.value("inputs_locked") in (True, "true")
+    assert s.value("args_confirmed") in (True, "true")

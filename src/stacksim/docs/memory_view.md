@@ -1,9 +1,25 @@
 # How to read the memory view
 
-When you press **Run** (F5), stacksim runs the whole program and records every
-step. Afterwards you can move through the recording in any direction, at any
-speed. At every step, the right side of the window shows the complete memory of
-the program at that moment.
+When you press **Execute** (F5), stacksim runs the whole program with its
+inputs and records every step. Afterwards you can go through the recording with
+**Play**, the step buttons or the timeline, in any direction, at any speed. At
+every step, the right side of the window shows the complete memory of the
+program at that moment.
+
+## Executing and inputs
+
+A program can get two kinds of input, both in the **Input** tab:
+
+- **Command-line arguments** - if `main` is declared as `int main(int argc, char *argv[])`. Execute asks for them before the program starts (an empty list is fine). `argv[0]` is the program name, `./` plus the file name.
+- **Keyboard input** - read by `scanf`, `getchar` and `fgets`. You can type it into the tab in advance; otherwise Execute asks for one line whenever the program wants to read more, showing what the program has printed so far. *End of input (EOF)* tells the program that there is no more.
+
+After Execute, the inputs are **locked**: they belong to that run, and playing
+it back always shows the result for exactly these inputs. When you execute a
+program that uses input again, stacksim asks whether to use the same inputs or
+to reset them and enter new ones. *Reset inputs* in the tab clears them (the
+next Execute asks again), and *Edit inputs* unlocks them for changes. Changing
+the code or the inputs makes the recorded run outdated: Play is unavailable
+until you execute again.
 
 ## The explanation panel
 
@@ -29,6 +45,12 @@ valid string also shows the string in quotes below its cells.
 
 When a function is about to return, its frame shows the return value at the
 bottom.
+
+If `main` takes `argc` and `argv`, a **Command-line arguments** card sits above
+`main()`'s frame, at the very top of the stack: the text of every argument and,
+below it, the `argv` array with one pointer per argument and a `NULL` at the
+end. The C runtime puts them there before `main()` starts; `main()`'s `argv`
+parameter points to the array.
 
 ### Return address and saved frame pointer
 
@@ -116,9 +138,9 @@ on or off. Hold **Ctrl** and turn the mouse wheel to zoom.
 
 | Control | Shortcut | What it does |
 |---|---|---|
-| Run | F5 | compile and run the program, recording every step |
-| Play / Pause | F6 | play forward at the chosen speed |
-| Stop | Esc or Shift+F5 | pause the playback (or cancel a run that takes too long) |
+| Execute | F5 | compile the program, run it with its inputs and record every step |
+| Play / Pause | F6 | play the executed run forward at the chosen speed |
+| Stop | Esc or Shift+F5 | pause the playback (or cancel an execution that takes too long) |
 | Play backwards | Shift+F6 | play backward |
 | Step / Back | F10 / Shift+F10 | one step forward / back |
 | Step over / Back over | F11 / Shift+F11 | to the next / previous line of the current function, without going into the functions it calls |
@@ -126,9 +148,9 @@ on or off. Hold **Ctrl** and turn the mouse wheel to zoom.
 | Timeline | | click or drag to jump anywhere; orange and red marks show problems |
 | Breakpoints | click in the editor margin, or F9 | Play (and "Instant") stops at these lines |
 
-The **Speed** box sets how fast Play runs. *Step by step* waits for you after
-Run; *Instant* jumps straight to the end of the program (or to the next
-breakpoint).
+The **Speed** box sets how fast Play runs; *Instant* jumps straight to the end
+of the program (or to the next breakpoint). Execute itself never starts the
+playback: after it, the run waits at its first step.
 
 ## What is simplified
 

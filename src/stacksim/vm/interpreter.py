@@ -102,6 +102,8 @@ class VM:
         max_frames: int = DEFAULT_MAX_FRAMES,
         input_provider=None,
         stdin_eof: bool = False,
+        args: list[str] | None = None,
+        prog_name: str = "./prog",
     ):
         self.prog = program
         self.source = source
@@ -114,6 +116,10 @@ class VM:
         # or None for "end of input"; it may raise Cancelled to stop the run.
         self.input_provider = input_provider
         self.stdin_eof = stdin_eof
+        # Command-line arguments (argv[1], argv[2], ...); argv[0] is prog_name.
+        self.args = list(args or [])
+        self.prog_name = prog_name
+        self.arg_objs: list[int] = []
         self.cancel = cancel
 
         self.mem = Memory()
@@ -268,6 +274,10 @@ class VM:
                         if o.death is None and o.addr < end and addr < o.addr + o.size:
                             return o
                 fr = self.frames[fr.parent] if fr.parent is not None else None
+            for oid in self.arg_objs:
+                o = self.objects[oid]
+                if oid != exclude and o.addr < end and addr < o.addr + o.size:
+                    return o
             return None
         if r.kind == "heap":
             for oid in self.heap.live.values():
@@ -568,19 +578,11 @@ class VM:
             pos = _align_up(pos, sym.ty.align)
             layout.append(("builtin", sym, pos, sym.ty.size))
             pos += sym.ty.size
-        argv_needed = len(prog.main.params) == 2
-        if argv_needed:
-            layout.append(("argvstr", None, pos, 8))
-            pos += 8
-            pos = _align_up(pos, 8)
-            layout.append(("argv", None, pos, 16))
-            pos += 16
         for d in prog.globals:
             pos = _align_up(pos, d.ty.align)
             layout.append(("var", d, pos, d.ty.size))
             pos += d.ty.size
         data = mem.add_region("data", "data", data_base, max(16, _align_up(pos - data_base, 16)), fill="zero")
-        self.argv = None
         for kind, what, addr, size in layout:
             if kind == "file":
                 oid = self.new_object("builtin", f"<{what} FILE>", None, addr, size, None, data)
@@ -594,15 +596,6 @@ class VM:
                 sym.addr, sym.obj = addr, oid
                 target = file_objs.get(sym.name, 0)
                 mem.write(data, addr, target.to_bytes(8, "little"))
-            elif kind == "argvstr":
-                oid = self.new_object("global", "argv[0] text", T.ArrayType(T.CHAR, 8), addr, 8, None, data)
-                mem.write(data, addr, b"./prog\0\0")
-                self.argv_str = (addr, oid)
-            elif kind == "argv":
-                oid = self.new_object("global", "argv array", T.ArrayType(T.PointerType(T.CHAR), 2), addr, 16, None, data)
-                mem.write(data, addr, self.argv_str[0].to_bytes(8, "little") + bytes(8))
-                self.sh_set(addr, self.argv_str[1])
-                self.argv = (addr, oid)
             else:
                 d = what
                 sym = d.sym
@@ -660,15 +653,22 @@ class VM:
             return_sites=dict(self.return_sites),
             runtime_return=self.runtime_return,
             final_shadow=dict(self.shadow),
+            args=[self.prog_name] + self.args,
         )
 
     def run_main(self) -> int:
         fd = self.prog.main
         args = []
         if len(fd.params) == 2:
-            args = [1, Ptr(self.argv[0], self.argv[1])]
+            args = self.setup_args()
         self.push_frame(fd, None)
         self.bind_params(fd, args, [p.ty for p in fd.params])
+        if args:
+            n = args[0] - 1
+            self.event(
+                f"Before main() starts, the C runtime puts the {n} command-line argument{'s' if n != 1 else ''} "
+                f"and the program name at the top of the stack: argc = {args[0]}, argv points to an array of strings."
+            )
         self.event("The program starts: main() gets the first stack frame.")
         if self.prog.globals:
             self.event("Global variables were set up in the static data area before main() started.")
@@ -682,6 +682,37 @@ class VM:
         ret = self.frame.ret_value
         self.pop_frame()
         return ret if isinstance(ret, int) else 0
+
+    def setup_args(self) -> list:
+        """Put the program name, the arguments and the argv array at the top of the stack, like Linux does.
+
+        Returns the values for main's parameters: [argc, argv].
+        """
+        words = [self.prog_name] + self.args
+        encoded = [w.encode("utf-8") + b"\0" for w in words]
+        st = self.stack
+        top = STACK_TOP - 0x10
+        # The strings, argv[0]'s text at the highest address.
+        pos = top
+        texts = []
+        for i, data in enumerate(encoded):
+            pos -= len(data)
+            texts.append((pos, data))
+        arr = (pos - 8 * (len(words) + 1)) & ~15
+        if arr - 64 < st.base:
+            self.fatal("stack-overflow", "the command-line arguments do not fit on the stack", None)
+        for i, (addr, data) in enumerate(texts):
+            oid = self.new_object("arg", f"argv[{i}] text", T.ArrayType(T.CHAR, len(data)), addr, len(data), None, st)
+            self.arg_objs.append(oid)
+            self.mem.write(st, addr, data)
+        size = 8 * (len(words) + 1)
+        aid = self.new_object("arg", "argv array", T.ArrayType(T.PointerType(T.CHAR), len(words) + 1), arr, size, None, st)
+        self.arg_objs.append(aid)
+        self.mem.write(st, arr, b"".join(a.to_bytes(8, "little") for a, _ in texts) + bytes(8))
+        for i in range(len(texts)):
+            self.sh_set(arr + 8 * i, self.arg_objs[i])
+        self.sp = arr & ~15
+        return [len(words), Ptr(arr, aid)]
 
     def finish(self, code, end: str, fatal: Diagnostic | None) -> None:
         line = None
@@ -1547,6 +1578,8 @@ def execute(
     max_frames: int = DEFAULT_MAX_FRAMES,
     input_provider=None,
     stdin_eof: bool = False,
+    args: list[str] | None = None,
+    prog_name: str = "./prog",
 ) -> Trace:
     """Run ``program`` in a thread with a large stack (deep C recursion needs deep Python recursion)."""
     result: dict = {}
@@ -1555,7 +1588,7 @@ def execute(
         old = sys.getrecursionlimit()
         sys.setrecursionlimit(max(old, 400_000))
         try:
-            result["trace"] = VM(program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof).run()
+            result["trace"] = VM(program, stdin, max_steps, cancel, source, max_frames, input_provider, stdin_eof, args, prog_name).run()
         except BaseException as exc:  # pragma: no cover - surfaced to the caller
             result["error"] = exc
 
