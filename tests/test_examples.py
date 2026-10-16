@@ -50,3 +50,14 @@ def test_scanf_example_output():
     assert output_text(tr).endswith("sum = 42\n")
     _, tr = run_source(ex.code, ex.stdin)  # without anyone typing: EOF, count stays 0
     assert output_text(tr).endswith("sum = 0\n")
+
+
+def test_command_line_example():
+    ex = next(e for e in EXAMPLES if e.title == "Command-line arguments")
+    assert ex.group == "Input" and ex.args == ("3", "hello")
+    _, tr = run_source(ex.code, ex.stdin, args=list(ex.args))
+    assert output_text(tr).endswith("1: hello\n2: hello\n3: hello\n")
+    assert tr.exit_code == 0
+    _, tr = run_source(ex.code, ex.stdin)  # no arguments: usage message
+    assert "usage: ./prog <count> <word>" in output_text(tr)
+    assert tr.exit_code == 1

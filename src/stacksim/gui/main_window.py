@@ -8,7 +8,7 @@ import traceback
 from importlib import resources
 
 from PySide6.QtCore import QObject, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPixmap, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPainter, QPixmap, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -42,7 +42,7 @@ from .canvas import MemoryCanvas
 from .editor import CodeEditor
 from .examples import DEFAULT_PROGRAM, EXAMPLES, NEW_FILE
 from .inputs import ArgsDialog, InputDialog, InputPanel
-from .theme import current_theme, mono_font
+from .theme import DEFAULT_THEME, THEMES, apply_app_theme, mono_font, toolbar_stylesheet
 from .timeline import Timeline
 
 SPEEDS = [
@@ -90,7 +90,9 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: QSettings | None = None):
         super().__init__()
         self.settings = settings if settings is not None else QSettings("stacksim", "stacksim")
-        self.theme = current_theme()
+        name = self.settings.value("theme", DEFAULT_THEME)
+        self.theme_name = name if name in THEMES else DEFAULT_THEME
+        self.theme = apply_app_theme(self.theme_name)
         self.trace: Trace | None = None
         self.builder: ViewBuilder | None = None
         self.compile_result: CompileResult | None = None
@@ -253,7 +255,9 @@ class MainWindow(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         tb.setMovable(False)
         self.addToolBar(tb)
+        self.toolbar = tb
         tb.addAction(self.act_execute)
+        tb.widgetForAction(self.act_execute).setObjectName("executeButton")
         tb.addAction(self.act_stop)
         tb.addSeparator()
         for a in (self.act_first, self.act_back_over, self.act_back, self.act_play_back, self.act_play, self.act_step, self.act_step_over, self.act_last):
@@ -319,6 +323,17 @@ class MainWindow(QMainWindow):
         for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames, self.act_ghosts):
             vm.addAction(a)
         vm.addSeparator()
+        theme_menu = vm.addMenu("Theme")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.theme_actions = {}
+        for key, label in (("dark", "Dark"), ("light", "Light")):
+            a = act(label, lambda checked=False, k=key: self.set_theme(k), checkable=True)
+            a.setChecked(key == self.theme_name)
+            group.addAction(a)
+            theme_menu.addAction(a)
+            self.theme_actions[key] = a
+        vm.addSeparator()
         vm.addAction(act("Zoom in", lambda: self.canvas.set_zoom(self.canvas.zoom * 1.15), "Ctrl++"))
         vm.addAction(act("Zoom out", lambda: self.canvas.set_zoom(self.canvas.zoom / 1.15), "Ctrl+-"))
         vm.addAction(act("Reset zoom", lambda: self.canvas.set_zoom(1.0), "Ctrl+0"))
@@ -326,6 +341,8 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         for a in (self.act_addr, self.act_bytes, self.act_freed, self.act_frames, self.act_ghosts):
             tb.addAction(a)
+
+        tb.setStyleSheet(toolbar_stylesheet(self.theme))
 
         hm = mb.addMenu("&Help")
         hm.addAction(act("How to read the memory view", lambda: self.show_doc("memory_view.md", "How to read the memory view")))
@@ -400,6 +417,7 @@ class MainWindow(QMainWindow):
         s.setValue("show_freed", self.act_freed.isChecked())
         s.setValue("show_frame_info", self.act_frames.isChecked())
         s.setValue("show_ghosts", self.act_ghosts.isChecked())
+        s.setValue("theme", self.theme_name)
         s.setValue("max_frames", self.max_frames)
         s.setValue("max_steps", self.max_steps)
 
@@ -467,6 +485,9 @@ class MainWindow(QMainWindow):
     def load_example(self, ex) -> None:
         if self.confirm_discard():
             self.set_source(ex.code, ex.stdin)
+            if ex.args:
+                # Only a suggestion: Execute still shows the arguments dialog, pre-filled.
+                self.inputs.set_args(list(ex.args), confirmed=False)
             self.statusBar().showMessage(f"Loaded example: {ex.title}. Press Execute (F5) to run it.")
 
     def open_file_dialog(self) -> None:
@@ -960,6 +981,25 @@ class MainWindow(QMainWindow):
         )
         if ok:
             self.max_frames = v
+
+    def set_theme(self, name: str) -> None:
+        """Switch between the dark and the light theme."""
+        if name not in THEMES:
+            return
+        self.theme_name = name
+        self.theme = apply_app_theme(name)
+        for key, a in self.theme_actions.items():
+            a.setChecked(key == name)
+        self.toolbar.setStyleSheet(toolbar_stylesheet(self.theme))
+        self.editor.set_theme(self.theme)
+        self.canvas.set_theme(self.theme)
+        self.timeline.update()
+        self.out_sig = (-1, None)  # repaint the output in the new colours
+        if self.state is not None and not self.stale:
+            self.goto(self.pos)
+        elif self.trace is None:
+            self.output.clear()
+            self.show_intro()
 
     def set_canvas_option(self, name: str, value: bool) -> None:
         if name in ("show_freed", "show_ghosts"):

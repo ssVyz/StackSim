@@ -132,7 +132,8 @@ values of that type; before that it is shown as raw bytes.
 Hover over any value, variable or block for details: type, size, address and
 the exact value. *View > Show raw bytes* adds the bytes of every value (in
 memory order, little-endian), and *View > Show addresses* switches addresses
-on or off. Hold **Ctrl** and turn the mouse wheel to zoom.
+on or off. Hold **Ctrl** and turn the mouse wheel to zoom. *View > Theme*
+switches between the dark theme (the default) and a light theme.
 
 ## Moving through the program
 

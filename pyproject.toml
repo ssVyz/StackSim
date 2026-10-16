@@ -1,6 +1,6 @@
 [project]
 name = "stacksim"
-version = "0.0.8"
+version = "0.1.0"
 description = "A teaching tool that runs small C programs in a virtual machine and visualizes the stack and the heap step by step."
 readme = "README.md"
 requires-python = ">=3.13"

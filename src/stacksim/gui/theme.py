@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QPalette
+from PySide6.QtWidgets import QApplication, QStyleFactory
 
 
 @dataclass
@@ -57,6 +58,12 @@ class Theme:
     syn_function: QColor
     out_stderr: QColor
     out_system: QColor
+    # toolbar buttons
+    tb_button: QColor = None
+    tb_border: QColor = None
+    tb_hover: QColor = None
+    tb_checked: QColor = None
+    tb_accent: QColor = None
 
 
 def _c(s: str) -> QColor:
@@ -82,6 +89,7 @@ LIGHT = Theme(
     syn_keyword=_c("#7b30d0"), syn_type=_c("#0b7d8c"), syn_string=_c("#1c7d23"), syn_number=_c("#b5530b"),
     syn_comment=_c("#8c8c8c"), syn_preproc=_c("#b0207e"), syn_function=_c("#1f5fbf"),
     out_stderr=_c("#c5221f"), out_system=_c("#80868b"),
+    tb_button=_c("#ffffff"), tb_border=_c("#aab1bb"), tb_hover=_c("#e3edfc"), tb_checked=_c("#cfe0fb"), tb_accent=_c("#2f6fd0"),
 )
 
 DARK = Theme(
@@ -103,7 +111,82 @@ DARK = Theme(
     syn_keyword=_c("#c792ea"), syn_type=_c("#56c4d3"), syn_string=_c("#a5d6a7"), syn_number=_c("#f7a96b"),
     syn_comment=_c("#7f848e"), syn_preproc=_c("#f48fb1"), syn_function=_c("#82aaff"),
     out_stderr=_c("#f28b82"), out_system=_c("#9aa0a6"),
+    tb_button=_c("#3a3d42"), tb_border=_c("#62676f"), tb_hover=_c("#48505c"), tb_checked=_c("#2d4a78"), tb_accent=_c("#6ea8fe"),
 )
+
+THEMES = {"dark": DARK, "light": LIGHT}
+DEFAULT_THEME = "dark"
+
+
+def _dark_palette() -> QPalette:
+    p = QPalette()
+    roles = {
+        QPalette.ColorRole.Window: "#2b2d30",
+        QPalette.ColorRole.WindowText: "#e8eaed",
+        QPalette.ColorRole.Base: "#1e1f22",
+        QPalette.ColorRole.AlternateBase: "#26282b",
+        QPalette.ColorRole.ToolTipBase: "#2b2d30",
+        QPalette.ColorRole.ToolTipText: "#e8eaed",
+        QPalette.ColorRole.PlaceholderText: "#80868b",
+        QPalette.ColorRole.Text: "#e8eaed",
+        QPalette.ColorRole.Button: "#3a3d42",
+        QPalette.ColorRole.ButtonText: "#e8eaed",
+        QPalette.ColorRole.BrightText: "#ff6b6b",
+        QPalette.ColorRole.Light: "#4a4e55",
+        QPalette.ColorRole.Midlight: "#3f4247",
+        QPalette.ColorRole.Mid: "#303236",
+        QPalette.ColorRole.Dark: "#1a1b1d",
+        QPalette.ColorRole.Shadow: "#000000",
+        QPalette.ColorRole.Highlight: "#2f6fd0",
+        QPalette.ColorRole.HighlightedText: "#ffffff",
+        QPalette.ColorRole.Link: "#8ab4f8",
+        QPalette.ColorRole.LinkVisited: "#c58af9",
+    }
+    for role, color in roles.items():
+        p.setColor(role, QColor(color))
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+        p.setColor(QPalette.ColorGroup.Disabled, role, QColor("#6f737a"))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Base, QColor("#252629"))
+    return p
+
+
+def apply_app_theme(name: str) -> Theme:
+    """Switch the whole application to the "dark" or "light" theme.
+
+    The Fusion style is used for both, so that the app looks the same on every
+    system and follows our colours instead of the system setting.
+    """
+    app = QApplication.instance()
+    theme = THEMES.get(name, THEMES[DEFAULT_THEME])
+    if app is None:
+        return theme
+    fusion = QStyleFactory.create("Fusion")
+    if fusion is not None:
+        app.setStyle(fusion)
+    app.setPalette(_dark_palette() if theme.dark else app.style().standardPalette())
+    return theme
+
+
+def toolbar_stylesheet(t: Theme) -> str:
+    """Toolbar buttons with a visible outline, so it is clear where each one starts and ends."""
+    return f"""
+QToolBar#runbar {{ spacing: 4px; padding: 4px 6px; border: none; }}
+QToolBar#runbar::separator {{ width: 1px; background: {t.tb_border.name()}; margin: 4px 6px; }}
+QToolBar#runbar QToolButton {{
+    background: {t.tb_button.name()};
+    color: {t.text.name()};
+    border: 1px solid {t.tb_border.name()};
+    border-radius: 5px;
+    padding: 3px 8px;
+}}
+QToolBar#runbar QToolButton:hover {{ background: {t.tb_hover.name()}; border-color: {t.tb_accent.name()}; }}
+QToolBar#runbar QToolButton:pressed {{ background: {t.tb_checked.name()}; }}
+QToolBar#runbar QToolButton:checked {{ background: {t.tb_checked.name()}; border-color: {t.tb_accent.name()}; }}
+QToolBar#runbar QToolButton:disabled {{ background: transparent; color: {t.text_dim.name()}; border-color: {t.tb_border.name()}; }}
+QToolBar#runbar QToolButton#executeButton {{ font-weight: bold; border: 1px solid {t.problem_border.name()}; }}
+QToolBar#runbar QToolButton#executeButton:hover {{ background: {t.problem_fill.name()}; }}
+QToolBar#runbar QComboBox {{ padding: 2px 6px; }}
+"""
 
 
 def current_theme() -> Theme:

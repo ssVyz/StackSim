@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-10-16
+
+### Added
+
+- *View > Theme* with a dark and a light theme; the choice is remembered.
+- Example "Command-line arguments" (under *Examples > Input*): prints `argc` and every `argv` entry and repeats a word as often as the first argument says. Examples can suggest arguments, which pre-fill the arguments dialog on the first Execute.
+
+### Changed
+
+- The app starts in the dark theme by default, independent of the system setting. Both themes use the Fusion style with stacksim's own colours, so the app looks the same on every system.
+- Toolbar buttons have a visible outline and background, a hover state and a filled look when switched on, so it is clear where each button starts and ends; Execute is outlined in red.
+
 ## [0.0.8] - 2026-10-16
 
 ### Added

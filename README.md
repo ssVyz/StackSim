@@ -49,6 +49,7 @@ stack overflow.
 | **Breakpoints** | click in the editor margin (or press F9); playback stops there |
 | **Input** tab | the command-line arguments (`argc`/`argv`) and the keyboard input (`scanf`, `getchar`, `fgets`). Execute asks for what is missing: the arguments before the program starts, keyboard input when the program reads it. After Execute the inputs are locked to that run; executing again asks whether to keep them. *Reset inputs* clears them, *Edit inputs* unlocks them |
 | **Problems** tab | every compile and run-time problem; click one to jump to its step |
+| **View > Theme** | dark (default) or light |
 
 Inside the app, *Help > How to read the memory view* explains the picture, and
 *Help > Supported C and library functions* lists exactly what is implemented.

@@ -140,6 +140,12 @@ class CodeEditor(QPlainTextEdit):
         self._update_gutter_width()
         self._refresh_selections()
 
+    def set_theme(self, theme: Theme) -> None:
+        self.theme = theme
+        self.highlighter.set_theme(theme)
+        self._refresh_selections()
+        self.gutter.update()
+
     # ------------------------------------------------------------- gutter
 
     def gutter_width(self) -> int:

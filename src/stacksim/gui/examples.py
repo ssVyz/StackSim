@@ -11,6 +11,7 @@ class Example:
     group: str
     code: str
     stdin: str = ""
+    args: tuple[str, ...] = ()  # suggested command-line arguments (pre-filled in the arguments dialog)
 
 
 EXAMPLES: list[Example] = [
@@ -396,6 +397,35 @@ int main(void) {
 }
 """,
         stdin="",
+    ),
+    Example(
+        "Command-line arguments",
+        "Input",
+        """\
+#include <stdio.h>
+#include <stdlib.h>
+
+// Execute asks for the arguments - try: 3 hello
+// (like typing  ./prog 3 hello  in a terminal)
+int main(int argc, char *argv[]) {
+    printf("argc = %d\\n", argc);
+    for (int i = 0; i < argc; i++) {
+        printf("argv[%d] = \\"%s\\"\\n", i, argv[i]);
+    }
+
+    if (argc < 3) {
+        printf("usage: %s <count> <word>\\n", argv[0]);
+        return 1;
+    }
+
+    int count = atoi(argv[1]);    // the text "3" becomes the number 3
+    for (int i = 0; i < count; i++) {
+        printf("%d: %s\\n", i + 1, argv[2]);
+    }
+    return 0;
+}
+""",
+        args=("3", "hello"),
     ),
     Example(
         "Uninitialized variables",

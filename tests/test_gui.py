@@ -461,3 +461,32 @@ def test_inputs_are_saved_with_the_settings(window, qapp):
     assert list(s.value("args")) == ["a", "b c"]
     assert s.value("inputs_locked") in (True, "true")
     assert s.value("args_confirmed") in (True, "true")
+
+
+def test_command_line_example_suggests_its_arguments(window, qapp):
+    w = window
+    ex = next(e for e in __import__("stacksim.gui.examples", fromlist=["EXAMPLES"]).EXAMPLES if e.title == "Command-line arguments")
+    w.load_example(ex)
+    seen = []
+    w.ask_args = lambda name, cur: seen.append(list(cur)) or list(cur)
+    run_and_wait(w, qapp)
+    assert seen == [["3", "hello"]], "the dialog is still shown, pre-filled with the suggestion"
+    assert w.trace.args == ["./prog", "3", "hello"]
+
+
+def test_dark_theme_by_default_and_switchable(window, qapp):
+    w = window
+    assert w.theme_name == "dark" and w.theme.dark
+    assert qapp.palette().color(qapp.palette().ColorRole.Window).lightness() < 128
+    assert w.theme_actions["dark"].isChecked()
+    assert w.theme.tb_border.name() in w.toolbar.styleSheet()
+    assert w.toolbar.widgetForAction(w.act_execute).objectName() == "executeButton"
+
+    w.set_theme("light")
+    assert not w.theme.dark and not w.canvas.theme.dark and not w.editor.theme.dark
+    assert qapp.palette().color(qapp.palette().ColorRole.Window).lightness() >= 128
+    assert w.theme.tb_border.name() in w.toolbar.styleSheet()
+    w.save_settings()
+    assert w.settings.value("theme") == "light"
+    w.set_theme("dark")
+    assert w.theme.dark
